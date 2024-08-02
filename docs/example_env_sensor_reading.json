@@ -1,0 +1,1 @@
+{"StatusSNS":{"Time":"2024-06-11T17:11:52","BME280":{"Temperature":23.6,"Humidity":55.0,"DewPoint":14.0,"Pressure":976.0},"TSL2561":{"Illuminance":102.000,"IR":4656,"Broadband":10246},"PressureUnit":"hPa","TempUnit":"C"}}
