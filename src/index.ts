@@ -607,16 +607,38 @@ async function shouldAlarmBePlayed() {
     `shouldAlarmBePlayed(): decisionData: ${JSON.stringify(decisionData)}`,
   )
 
+  if (latestButtonEvent?.event_type !== ButtonEventType.InBed) {
+    return false
+  }
+
   if (
-    latestButtonEvent?.event_type === ButtonEventType.InBed &&
-    darkInfo?.darkRatio &&
-    darkInfo.darkRatio > 0.95 &&
-    devicePowerInfo?.offRatio &&
-    devicePowerInfo.offRatio > 0.95 &&
-    devicePowerInfo.lastMeasuredPowerWatt < 5
+    devicePowerInfo &&
+    devicePowerInfo.offRatio <= 0.95 &&
+    devicePowerInfo.lastMeasuredPowerWatt >= 5
   ) {
+    return false
+  }
+
+  if (darkInfo?.darkRatio && darkInfo.darkRatio > 0.95) {
     return true
   }
+
+  // If it's past 6 AM in the morning, and the user hasn't pressed the
+  // 'awake' button, we play reveille jingle on the button/alarm device
+  // even if illuminance is above the threshold.
+  const dtFormatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: process.env.USER_TIMEZONE!,
+    hour: 'numeric',
+    hour12: false,
+  })
+  const hour = Number.parseInt(
+    dtFormatter.formatToParts(new Date()).find((p) => p.type === 'hour')
+      ?.value!,
+  )
+  if (hour >= 6 && hour <= 13) {
+    return true
+  }
+
   return false
 }
 
@@ -651,14 +673,23 @@ async function getButtonEvents({
   }
   return parseRes.data
 }
-
-// TODO: There needs to be a way retrieve the button event times so that you can know
-// when you went to bed, when you awoke, when you got out, etc.
-// MAYBE: Perhaps there should be a button on the button/alarm device to check the
-// current status? For example, is it in in_bed, awake, out_of_bed? It would play
-// the "response" jingle corresponding to the status? This would also work as a way to
-// check if the button/alarm device is connected to the server-side off-alarm program
-// correctly.
+/*
+TODO: There needs to be a way retrieve the button event times so that you can know
+when you went to bed, when you awoke, when you got out, etc.
+MAYBE: Perhaps there should be a button on the button/alarm device to check the
+current status? For example, is it in in_bed, awake, out_of_bed? It would play
+the "response" jingle corresponding to the status? This would also work as a way to
+check if the button/alarm device is connected to the server-side off-alarm program
+correctly.
+MAYBE: Perhaps the illuminance threshold should be adjusted so that alarm works
+during the early mornings when the sun has rose and the room isn't pitch black.
+Room light is about 21 lux, bedside light is about 42 lux, 8:30 AM in early August
+w/ curtains drawn is about 10 lux, 10:15 AM w/ one side of curtain open is 44 lux.
+We can't completley ignore illumiance since after 'in_bed' event, off-alarm
+sees if the illuminance is less than 20 lux to see if the light has been turned off,
+and the user actually intends to start sleeping as opposed to lying awake
+in bed with lights on.
+*/
 
 async function main() {
   await initDuckTables()
