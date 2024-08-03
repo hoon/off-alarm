@@ -31,7 +31,7 @@ const influxdb = new InfluxDB({
   */
 
 const duck = await DuckDb.create(':memory:')
-const educk = await DuckDb.create('button_events.duckdb')
+const educk = await DuckDb.create('button_event.duckdb')
 
 const mqttClient = mqtt.connect(process.env.MQTT_SERVER_URI!, {
   username: process.env.MQTT_USERNAME!,
@@ -84,7 +84,7 @@ export async function getDevicePowerReadings() {
         powerWattReadings.push({ time: o.unix_time, powerWatt })
 
         const stmt = duck.prepare(
-          `INSERT INTO device_power (mtime, power_watt) VALUES (?, ?);`,
+          `INSERT INTO device_power (mtime, power_watt) ` + `VALUES (?, ?);`,
         )
 
         stmt.then(async (_stmt) => {
@@ -129,7 +129,8 @@ export async function getIlluminanceReadings() {
         illuminanceReadings.push({ time: o.unix_time, illuminanceLux })
 
         const stmt = duck.prepare(
-          `INSERT INTO illuminance (mtime, illuminance_lux) VALUES (?, ?);`,
+          `INSERT INTO illuminance (mtime, illuminance_lux) ` +
+            `VALUES (?, ?);`,
         )
 
         stmt.then(async (_stmt) => {
@@ -478,9 +479,9 @@ async function insertIlluminanceSensorsReading(envSensorsReadingStr: string) {
   })
 }
 
-async function initButtonEventsTables() {
+async function initButtonEventTables() {
   const ccpr = await educk.run(
-    `CREATE TABLE IF NOT EXISTS button_events
+    `CREATE TABLE IF NOT EXISTS button_event
       (
         etime TIMESTAMPTZ,
         event_type INT,
@@ -488,21 +489,22 @@ async function initButtonEventsTables() {
       );`,
   )
   logger.info(
-    `initButtonEventsTables(): CREATE button_events table: ${JSON.stringify(ccpr)}`,
+    `initButtonEventTables(): CREATE button_event table: ${JSON.stringify(ccpr)}`,
   )
 
   const cidx = await educk.run(
-    `CREATE INDEX IF NOT EXISTS be_event_type_idx ON button_events(event_type);`,
+    `CREATE INDEX IF NOT EXISTS be_event_type_idx ON button_event(event_type);`,
   )
   logger.info(
-    `initButtonEventsTables(): CREATE INDEX on button_events table: ${JSON.stringify(cidx)}`,
+    `initButtonEventTables(): CREATE INDEX on button_event table: ${JSON.stringify(cidx)}`,
   )
 }
 
 async function insertButtonEvent(buttonEventStr: string) {
   const evStr = buttonEventStr.trim()
   const stmt = await educk.prepare(
-    `INSERT INTO button_events (etime, event_type) VALUES (?, ?)`,
+    `INSERT INTO button_event (etime, event_type) ` +
+      `VALUES (epoch_ms(?::BIGINT) AT TIME ZONE 'UTC', ?);`,
   )
   // Object.keys(eventStrsToInt).forEach(async (evKey) => {
   //   if (evStr === evKey) {
@@ -511,15 +513,15 @@ async function insertButtonEvent(buttonEventStr: string) {
   // })
 
   if (evStr === 'in_bed') {
-    await stmt.run(new Date(), ButtonEventType.InBed)
+    await stmt.run(Date.now(), ButtonEventType.InBed)
     await playToneOnDevice(1)
   }
   if (evStr === 'awake') {
-    await stmt.run(new Date(), ButtonEventType.Awake)
+    await stmt.run(Date.now(), ButtonEventType.Awake)
     await playToneOnDevice(3)
   }
   if (evStr === 'up_from_bed') {
-    await stmt.run(new Date(), ButtonEventType.UpFromBed)
+    await stmt.run(Date.now(), ButtonEventType.UpFromBed)
     await playToneOnDevice(5)
   }
 }
@@ -563,14 +565,14 @@ async function getLatestButtonEvent({
     `getLatestButtonEvent(): sinceUnixTimestamp = ${sinceUnixTimestamp}`,
   )
   const stmt = await educk.prepare(
-    `SELECT etime, event_type FROM button_events ` +
+    `SELECT etime, event_type FROM button_event ` +
       `WHERE etime >= epoch_ms(?::BIGINT) AT TIME ZONE 'UTC' ` +
       `ORDER BY etime DESC LIMIT 1;`,
   )
   const res = await stmt.all(sinceUnixTimestamp)
 
   // const res = await educk.all(
-  //   `SELECT etime, event_type FROM button_events ORDER BY etime DESC LIMIT 1;`,
+  //   `SELECT etime, event_type FROM button_event ORDER BY etime DESC LIMIT 1;`,
   // )
 
   const parseRes = await buttonEvent.safeParseAsync(res[0])
@@ -601,7 +603,9 @@ async function shouldAlarmBePlayed() {
     offRatio: devicePowerInfo?.offRatio,
     lmWatt: devicePowerInfo?.lastMeasuredPowerWatt,
   }
-  logger.debug(`shouldAlarmBePlayed(): decisionData: ${JSON.stringify(decisionData)}`)
+  logger.debug(
+    `shouldAlarmBePlayed(): decisionData: ${JSON.stringify(decisionData)}`,
+  )
 
   if (
     latestButtonEvent?.event_type === ButtonEventType.InBed &&
@@ -616,9 +620,49 @@ async function shouldAlarmBePlayed() {
   return false
 }
 
+async function getButtonEvents({
+  forSec = 60 * 60 * 24 * 2,
+  refTime = -1,
+}: {
+  forSec?: number
+  refTime?: number
+} = {}) {
+  const sql =
+    `SELECT etime, event_type ` +
+    `FROM button_event ` +
+    `WHERE etime >= epoch_ms(?::BIGINT) AT TIME ZONE 'UTC' - INTERVAL (?) SECOND ` +
+    `AND etime <= epoch_ms(?::BIGINT) AT TIME ZONE 'UTC' ` +
+    `ORDER BY etime DESC;`
+
+  const unixTimeMs = refTime === -1 ? Date.now() : refTime
+
+  const stmt = await educk.prepare(sql)
+  const res = await stmt.all(unixTimeMs, forSec, unixTimeMs)
+
+  const buttonEventArray = z.array(buttonEvent)
+
+  const parseRes = await buttonEventArray.safeParseAsync(res)
+
+  if (parseRes.error) {
+    logger.warn(
+      `getButtonEvents(): data returned from DuckDB wasn't valid, error msg: ${parseRes.error}`,
+    )
+    return null
+  }
+  return parseRes.data
+}
+
+// TODO: There needs to be a way retrieve the button event times so that you can know
+// when you went to bed, when you awoke, when you got out, etc.
+// MAYBE: Perhaps there should be a button on the button/alarm device to check the
+// current status? For example, is it in in_bed, awake, out_of_bed? It would play
+// the "response" jingle corresponding to the status? This would also work as a way to
+// check if the button/alarm device is connected to the server-side off-alarm program
+// correctly.
+
 async function main() {
   await initDuckTables()
-  await initButtonEventsTables()
+  await initButtonEventTables()
 
   const k = await getDevicePowerReadings()
   logger.info(`main(): getDevicePowerReadings(): ${JSON.stringify(k)}`)
@@ -686,6 +730,21 @@ async function main() {
       await playToneOnDevice(8)
     }
   }, 13000) // 13 seconds because the Reveille (tune #8) takes about 12 seconds to play
+
+  const webServer = Bun.serve({
+    async fetch(req) {
+      const url = new URL(req.url)
+      if (url.pathname === '/api/v1/button-events') {
+        const beRes = await getButtonEvents()
+        const response = new Response(JSON.stringify(beRes))
+        response.headers.set('Content-Type', 'application/json; charset=utf-8')
+        return response
+      }
+      return new Response('Hello world!')
+    },
+  })
+
+  logger.info(`HTTP server started on ${webServer.hostname}:${webServer.port}`)
 }
 
 main()
