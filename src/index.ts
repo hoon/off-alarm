@@ -767,9 +767,31 @@ async function main() {
       const url = new URL(req.url)
       if (url.pathname === '/api/v1/button-events') {
         const beRes = await getButtonEvents()
-        const response = new Response(JSON.stringify(beRes))
-        response.headers.set('Content-Type', 'application/json; charset=utf-8')
-        return response
+        const r = new Response(JSON.stringify(beRes))
+        r.headers.set('Content-Type', 'application/json; charset=utf-8')
+        return r
+      } else if (url.pathname === '/') {
+        const r = new Response(Bun.file('./frontend/dist/index.html'))
+        r.headers.set('Content-Type', 'Content-Type: text/html; charset=utf-8')
+        return r
+      } else if (url.pathname.startsWith('/assets/')) {
+        const filename = url.pathname.split('/').pop()
+        try {
+          const assetFile = Bun.file(`./frontend/dist/assets/${filename}`)
+          const r = new Response(assetFile)
+          if (filename?.endsWith('.js')) {
+            r.headers.set(
+              'Content-Type',
+              'application/javascript;charset=utf-8',
+            )
+          } else if (filename?.endsWith('.css')) {
+            r.headers.set('Content-Type', 'text/css;charset=utf-8')
+          }
+          return r
+        } catch (error) {
+          const r = new Response('404')
+          return r
+        }
       }
       return new Response('Hello world!')
     },
