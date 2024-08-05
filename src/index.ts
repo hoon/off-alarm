@@ -181,6 +181,7 @@ async function initDuckTables() {
   )
 }
 
+// TODO: make it accept refTime to allow for testing on example data set
 async function hasDeviceBeenOff(forSec: number = 300) {
   const countOffVsAllSql = `
     WITH
@@ -595,7 +596,7 @@ async function getLatestButtonEvent({
   return null
 }
 
-async function shouldAlarmBePlayed() {
+async function shouldAlarmBePlayed({ now: _now = -1 }: { now?: number } = {}) {
   // check if the latest button event is in_bed (=10)
   // check if the latest button event is from less than 14 hours ago
   // check if it's been consistently dark for the last X minutes
@@ -604,10 +605,12 @@ async function shouldAlarmBePlayed() {
   // check if the power-monitored device is off and has been off for at least a few minutes
   // return true if all of the above are true
 
+  const now = _now === -1 ? Date.now() : _now
+
   const latestButtonEvent = await getLatestButtonEvent({
-    sinceUnixTimestamp: Date.now() - 14 * 60 * 60 * 1000,
+    sinceUnixTimestamp: now - 14 * 60 * 60 * 1000,
   }) // in_bed within the last 14 hours
-  const darkInfo = await hasItBeenDark()
+  const darkInfo = await hasItBeenDark({ refTime: now })
   const devicePowerInfo = await hasDeviceBeenOff()
 
   const decisionData = {
@@ -621,6 +624,11 @@ async function shouldAlarmBePlayed() {
   )
 
   if (latestButtonEvent?.event_type !== ButtonEventType.InBed) {
+    return false
+  }
+
+  // in_bed button was pressed less than 30 seconds ago
+  if (now - latestButtonEvent.etime.getTime() < 30000) {
     return false
   }
 
@@ -645,7 +653,7 @@ async function shouldAlarmBePlayed() {
     hour12: false,
   })
   const hour = Number.parseInt(
-    dtFormatter.formatToParts(new Date()).find((p) => p.type === 'hour')
+    dtFormatter.formatToParts(new Date(now)).find((p) => p.type === 'hour')
       ?.value!,
   )
   if (hour >= 6 && hour <= 13) {
@@ -702,6 +710,11 @@ We can't completley ignore illumiance since after 'in_bed' event, off-alarm
 sees if the illuminance is less than 20 lux to see if the light has been turned off,
 and the user actually intends to start sleeping as opposed to lying awake
 in bed with lights on.
+
+MAYBE: There is a problem where the alarm tone keeps playing even after the device
+has been turned back on because the device power use is only checked every
+30 seconds. Perhaps a way to get around this is to suspend alarm for 30 seconds
+after any button event is received.
 */
 
 async function main() {
