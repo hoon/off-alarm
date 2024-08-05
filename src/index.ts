@@ -512,17 +512,30 @@ async function insertButtonEvent(buttonEventStr: string) {
   //   }
   // })
 
-  if (evStr === 'in_bed') {
-    await stmt.run(Date.now(), ButtonEventType.InBed)
-    await playToneOnDevice(1)
+  const buttonEventResponse = [
+    { eventName: 'in_bed', eventType: 10, responseTone: 1 },
+    { eventName: 'awake', eventType: 20, responseTone: 3 },
+    { eventName: 'up_from_bed', eventType: 30, responseTone: 5 },
+  ]
+
+  const evtResponse = buttonEventResponse.find(
+    (bert) => bert.eventName === evStr,
+  )
+  if (evtResponse) {
+    await stmt.run(Date.now(), evtResponse.eventType)
+    await playToneOnDevice(evtResponse.responseTone)
   }
-  if (evStr === 'awake') {
-    await stmt.run(Date.now(), ButtonEventType.Awake)
-    await playToneOnDevice(3)
-  }
-  if (evStr === 'up_from_bed') {
-    await stmt.run(Date.now(), ButtonEventType.UpFromBed)
-    await playToneOnDevice(5)
+
+  if (evStr === 'check_status') {
+    const latestButtonEvent = await getLatestButtonEvent()
+    if (latestButtonEvent) {
+      const er = buttonEventResponse.find(
+        (r) => r.eventType === latestButtonEvent.event_type,
+      )
+      if (er) {
+        await playToneOnDevice(er.responseTone)
+      }
+    }
   }
 }
 
@@ -561,7 +574,7 @@ async function isItDarkRightNow() {
 async function getLatestButtonEvent({
   sinceUnixTimestamp = 0,
 }: { sinceUnixTimestamp?: number } = {}) {
-  logger.info(
+  logger.debug(
     `getLatestButtonEvent(): sinceUnixTimestamp = ${sinceUnixTimestamp}`,
   )
   const stmt = await educk.prepare(
@@ -732,7 +745,7 @@ async function main() {
       await insertIlluminanceSensorsReading(str)
     } else if (topic === process.env.MQTT_TOPIC_BUTTONS_EVENT!) {
       const str = payload.toString()
-      logger.debug(`MQTT receive: button event: ${str}`)
+      logger.info(`MQTT receive: button event: ${str}`)
       await insertButtonEvent(str)
     }
   })
@@ -756,9 +769,11 @@ async function main() {
     // logger.info(`interval: hasPowerDeviceBeenOff(): ${JSON.stringify(dres)}`)
 
     const alarmRes = await shouldAlarmBePlayed()
-    logger.info(`interval: shouldAlarmBePlayed(): ${alarmRes}`)
     if (alarmRes) {
+      logger.info(`interval: shouldAlarmBePlayed(): ${alarmRes}`)
       await playToneOnDevice(8)
+    } else {
+      logger.debug(`interval: shouldAlarmBePlayed(): ${alarmRes}`)
     }
   }, 13000) // 13 seconds because the Reveille (tune #8) takes about 12 seconds to play
 
