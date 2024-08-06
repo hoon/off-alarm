@@ -627,8 +627,8 @@ async function shouldAlarmBePlayed({ now: _now = -1 }: { now?: number } = {}) {
     return false
   }
 
-  // in_bed button was pressed less than 30 seconds ago
-  if (now - latestButtonEvent.etime.getTime() < 30000) {
+  // in_bed button was pressed less than 3 minutes ago
+  if (now - latestButtonEvent.etime.getTime() < 3 * 60 * 1000) {
     return false
   }
 
