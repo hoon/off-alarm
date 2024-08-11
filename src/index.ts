@@ -634,8 +634,8 @@ async function shouldAlarmBePlayed({ now: _now = -1 }: { now?: number } = {}) {
 
   if (
     devicePowerInfo &&
-    devicePowerInfo.offRatio <= 0.95 &&
-    devicePowerInfo.lastMeasuredPowerWatt >= 5
+    (devicePowerInfo.offRatio <= 0.95 ||
+      devicePowerInfo.lastMeasuredPowerWatt >= 5)
   ) {
     return false
   }
