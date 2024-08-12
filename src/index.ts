@@ -631,6 +631,8 @@ async function shouldAlarmBePlayed({ now: _now = -1 }: { now?: number } = {}) {
   }
 
   // no further button presses after awake was pressed 15 min ago
+  // TODO: We may want to do this only in the morning, but will leave as is
+  // for now
   if (latestButtonEvent.event_type === ButtonEventType.Awake) {
     if (now - latestButtonEvent.etime.getTime() > 15 * 60 * 1000) {
       return true
