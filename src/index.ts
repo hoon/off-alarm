@@ -623,7 +623,18 @@ async function shouldAlarmBePlayed({ now: _now = -1 }: { now?: number } = {}) {
     `shouldAlarmBePlayed(): decisionData: ${JSON.stringify(decisionData)}`,
   )
 
-  if (latestButtonEvent?.event_type !== ButtonEventType.InBed) {
+  if (
+    latestButtonEvent?.event_type !== ButtonEventType.InBed &&
+    latestButtonEvent?.event_type !== ButtonEventType.Awake
+  ) {
+    return false
+  }
+
+  // no further button presses after awake was pressed 15 min ago
+  if (latestButtonEvent.event_type === ButtonEventType.Awake) {
+    if (now - latestButtonEvent.etime.getTime() > 15 * 60 * 1000) {
+      return true
+    }
     return false
   }
 
