@@ -41,8 +41,8 @@ const mqttClient = mqtt.connect(process.env.MQTT_SERVER_URI!, {
 const buttonEvent = z.object({
   etime: z.date(),
   event_type: z.number(),
-  temp_c: z.number().optional(),
-  illuminance_lux: z.number().optional(),
+  temp_c: z.number().nullable(),
+  illuminance_lux: z.number().nullable(),
 })
 
 type ButtonEvent = z.infer<typeof buttonEvent>
