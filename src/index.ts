@@ -41,6 +41,8 @@ const mqttClient = mqtt.connect(process.env.MQTT_SERVER_URI!, {
 const buttonEvent = z.object({
   etime: z.date(),
   event_type: z.number(),
+  temp_c: z.number().optional(),
+  illuminance_lux: z.number().optional(),
 })
 
 type ButtonEvent = z.infer<typeof buttonEvent>
@@ -113,24 +115,35 @@ export async function getIlluminanceReadings() {
     import "math"
     from(bucket:"${process.env.INFLUX_ENV_READINGS_BUCKET!}")
       |> range(start: -300s)
-      |> filter(fn: (r) => r._measurement == "${process.env.INFLUX_ENV_READINGS_MEASUREMENT}" and r._field == "illuminance_lux")
-      |> map(fn: (r) => ({_time: r._time, _value: r._value, unix_time: uint(v: r._time) / uint(v: 1000000)}))
+      |> filter(fn: (r) => r._measurement == "${process.env.INFLUX_ENV_READINGS_MEASUREMENT}")
+      |> filter(fn: (r) => r._field == "illuminance_lux" or r._field == "temp_c")
+      |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
+      |> map(fn: (r) => ({r with unix_time: uint(v: r._time) / uint(v: 1000000)}))
   `
 
-  const illuminanceReadings: { time: number; illuminanceLux: number }[] = []
+  const illuminanceReadings: {
+    time: number
+    illuminanceLux: number
+    tempC: number
+  }[] = []
   return await new Promise((resolve, reject) => {
     queryApi.queryRows(fluxQuery, {
       next(row, tableMeta) {
         const o = tableMeta.toObject(row)
-        const illuminanceLux = o._value
+        const illuminanceLux = o.illuminance_lux
         if (illuminanceLux == undefined || illuminanceLux == null) {
           return
         }
-        illuminanceReadings.push({ time: o.unix_time, illuminanceLux })
+        const tempC = o.temp_c
+        illuminanceReadings.push({
+          time: o.unix_time,
+          illuminanceLux,
+          tempC,
+        })
 
         const stmt = duck.prepare(
-          `INSERT INTO illuminance (mtime, illuminance_lux) ` +
-            `VALUES (?, ?);`,
+          `INSERT INTO illuminance (mtime, illuminance_lux, temp_c) ` +
+            `VALUES (?, ?, ?);`,
         )
 
         stmt.then(async (_stmt) => {
@@ -138,7 +151,7 @@ export async function getIlluminanceReadings() {
             logger.debug(
               `getIlluminanceReadings(): inserting {${o._time}, ${illuminanceLux}}}`,
             )
-            await _stmt.run(o._time, illuminanceLux)
+            await _stmt.run(o._time, illuminanceLux, tempC)
           } catch (err) {
             logger.warn(
               `getIlluminanceReadings(): DuckDB illuminance insert error: ${err}`,
@@ -172,7 +185,8 @@ async function initDuckTables() {
     `CREATE TABLE illuminance
       (
         mtime TIMESTAMPTZ,
-        illuminance_lux REAL,
+        illuminance_lux FLOAT,
+        temp_c FLOAT,
         PRIMARY KEY (mtime)
       );`,
   )
@@ -460,8 +474,8 @@ async function insertIlluminanceSensorsReading(envSensorsReadingStr: string) {
 
   // we only care about the illuminance from the sensor readings
   const stmt = duck.prepare(
-    `INSERT INTO illuminance (mtime, illuminance_lux) ` +
-      `VALUES (epoch_ms(?::BIGINT) AT TIME ZONE 'UTC', ?);`,
+    `INSERT INTO illuminance (mtime, illuminance_lux, temp_c) ` +
+      `VALUES (epoch_ms(?::BIGINT) AT TIME ZONE 'UTC', ?, ?);`,
   )
 
   stmt.then(async (_stmt) => {
@@ -469,6 +483,7 @@ async function insertIlluminanceSensorsReading(envSensorsReadingStr: string) {
       await _stmt.run(
         Date.now(), // k.data.StatusSNS.Time is in Amsterdam time because that's where Tasmota binary was compiled
         k.data.StatusSNS.TSL2561.Illuminance,
+        k.data.StatusSNS.BME280.Temperature,
       )
     } catch (err) {
       logger.warn(
@@ -486,6 +501,8 @@ async function initButtonEventTables() {
       (
         etime TIMESTAMPTZ,
         event_type INT,
+        temp_c FLOAT,
+        illuminance_lux FLOAT,
         PRIMARY KEY (etime)
       );`,
   )
@@ -504,8 +521,8 @@ async function initButtonEventTables() {
 async function insertButtonEvent(buttonEventStr: string) {
   const evStr = buttonEventStr.trim()
   const stmt = await educk.prepare(
-    `INSERT INTO button_event (etime, event_type) ` +
-      `VALUES (epoch_ms(?::BIGINT) AT TIME ZONE 'UTC', ?);`,
+    `INSERT INTO button_event (etime, event_type, temp_c, illuminance_lux) ` +
+      `VALUES (epoch_ms(?::BIGINT) AT TIME ZONE 'UTC', ?, ?, ?);`,
   )
   // Object.keys(eventStrsToInt).forEach(async (evKey) => {
   //   if (evStr === evKey) {
@@ -523,7 +540,24 @@ async function insertButtonEvent(buttonEventStr: string) {
     (bert) => bert.eventName === evStr,
   )
   if (evtResponse) {
-    await stmt.run(Date.now(), evtResponse.eventType)
+    const latestEnv = await duck.all(
+      'SELECT mtime, illuminance_lux, temp_c FROM illuminance ' +
+        'ORDER BY mtime DESC ' +
+        'LIMIT 1;',
+    )
+    let illuminanceLux: number | null = null
+    let tempC: number | null = null
+
+    if (latestEnv && latestEnv[0]) {
+      if (latestEnv[0].temp_c) {
+        tempC = parseFloat(latestEnv[0].temp_c)
+      }
+      if (latestEnv[0].illuminance_lux) {
+        illuminanceLux = parseFloat(latestEnv[0].illuminance_lux)
+      }
+    }
+
+    await stmt.run(Date.now(), evtResponse.eventType, tempC, illuminanceLux)
     await playToneOnDevice(evtResponse.responseTone)
   }
 
@@ -684,7 +718,7 @@ async function getButtonEvents({
   refTime?: number
 } = {}) {
   const sql =
-    `SELECT etime, event_type ` +
+    `SELECT etime, event_type, temp_c, illuminance_lux ` +
     `FROM button_event ` +
     `WHERE etime >= epoch_ms(?::BIGINT) AT TIME ZONE 'UTC' - INTERVAL (?) SECOND ` +
     `AND etime <= epoch_ms(?::BIGINT) AT TIME ZONE 'UTC' ` +

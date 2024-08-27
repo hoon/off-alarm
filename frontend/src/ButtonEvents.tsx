@@ -3,6 +3,8 @@ import { useEffect, useState } from 'react'
 interface ButtonEvent {
   etime: string
   event_type: number
+  temp_c?: number
+  illuminance_lux?: number
 }
 
 export default function ButtonEvents() {
@@ -34,9 +36,13 @@ export default function ButtonEvents() {
   return (
     <>
       {bEvents.map((be) => (
-        <div className='button-event'>
+        <div className="button-event">
           <div>{new Date(be.etime).toLocaleString()}</div>
           <div>{eventTypeNumberToText(be.event_type)}</div>
+          {be.temp_c && <div>{Math.round(be.temp_c * 10) / 10} &deg;C</div>}
+          {be.illuminance_lux && (
+            <div>{Math.round(be.illuminance_lux * 1000) / 1000} lx</div>
+          )}
         </div>
       ))}
     </>
