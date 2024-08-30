@@ -620,10 +620,6 @@ async function getLatestButtonEvent({
   )
   const res = await stmt.all(sinceUnixTimestamp)
 
-  // const res = await educk.all(
-  //   `SELECT etime, event_type FROM button_event ORDER BY etime DESC LIMIT 1;`,
-  // )
-
   const parseRes = await buttonEvent.safeParseAsync(res[0])
   if (parseRes.success) {
     return parseRes.data!
