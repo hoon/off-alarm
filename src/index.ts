@@ -613,7 +613,8 @@ async function getLatestButtonEvent({
     `getLatestButtonEvent(): sinceUnixTimestamp = ${sinceUnixTimestamp}`,
   )
   const stmt = await educk.prepare(
-    `SELECT etime, event_type FROM button_event ` +
+    `SELECT etime, event_type, temp_c, illuminance_lux ` +
+      `FROM button_event ` +
       `WHERE etime >= epoch_ms(?::BIGINT) AT TIME ZONE 'UTC' ` +
       `ORDER BY etime DESC LIMIT 1;`,
   )
