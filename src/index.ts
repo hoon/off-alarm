@@ -828,7 +828,7 @@ async function main() {
     const alarmRes = await shouldAlarmBePlayed()
     if (alarmRes) {
       logger.info(`interval: shouldAlarmBePlayed(): ${alarmRes}`)
-      await playToneOnDevice(8)
+      await playToneOnDevice(7)
     } else {
       logger.debug(`interval: shouldAlarmBePlayed(): ${alarmRes}`)
     }
