@@ -53,8 +53,9 @@ enum ButtonEventType {
   UpFromBed = 30,
 }
 
-const DEVICE_POWER_ON_THRESHOLD_WATT =
-  process.env.DEVICE_POWER_ON_THRESHOLD_WATT || 5
+const DEVICE_POWER_ON_THRESHOLD_WATT: number = Number.parseFloat(
+  process.env.DEVICE_POWER_ON_THRESHOLD_WATT || '5',
+)
 
 export async function getDevicePowerReadings() {
   const queryApi = influxdb.getQueryApi(process.env.INFLUX_ORG!)
@@ -679,7 +680,7 @@ async function shouldAlarmBePlayed({ now: _now = -1 }: { now?: number } = {}) {
   if (
     devicePowerInfo &&
     (devicePowerInfo.offRatio <= 0.95 ||
-      devicePowerInfo.lastMeasuredPowerWatt >= 5)
+      devicePowerInfo.lastMeasuredPowerWatt >= DEVICE_POWER_ON_THRESHOLD_WATT)
   ) {
     return false
   }
