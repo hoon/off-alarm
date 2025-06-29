@@ -54,18 +54,43 @@ enum ButtonEventType {
 }
 
 const DEVICE_POWER_ON_THRESHOLD_WATT: number = Number.parseFloat(
-  process.env.DEVICE_POWER_ON_THRESHOLD_WATT || '5',
+  process.env.DEVICE_POWER_ON_THRESHOLD_WATT || '4',
 )
 
-export async function getDevicePowerReadings() {
-  const queryApi = influxdb.getQueryApi(process.env.INFLUX_ORG!)
-  // const filter = flux` and r._time >= ${Date.now() - 60 * 60 * 1000}`
+const DEVICE_POWER_VARIANCE_POP_THRESHOLD: number = Number.parseFloat(
+  process.env.DEVICE_POWER_VARIANCE_POP_THRESHOLD || '3',
+)
+
+function getFluxTimeRangeStr({
+  forSec,
+  untilTime,
+}: {
+  forSec: number
+  untilTime: number
+}) {
+  return untilTime === -1
+    ? flux`range(start: -${forSec}s)`
+    : flux`range(
+        start: time(v: ${new Date(untilTime - forSec * 1000).toISOString()}),
+        stop: time(v: ${new Date(untilTime).toISOString()})
+      )`
+}
+
+export async function getDevicePowerReadings(
+  _influxDb: InfluxDB,
+  _duck: DuckDb,
+  {
+    forSec = 300,
+    untilTime = -1,
+  }: { forSec?: number; untilTime?: number } = {},
+) {
+  const queryApi = _influxDb.getQueryApi(process.env.INFLUX_ORG!)
+  const timeRangeStr = getFluxTimeRangeStr({ forSec, untilTime })
   const fluxQuery = flux`
     import "math"
     from(bucket:${process.env.INFLUX_DEVICE_POWER_BUCKET})
-      |> range(start:0)
+      |> ${timeRangeStr}
       |> filter(fn: (r) => r._measurement == "${process.env.INFLUX_DEVICE_POWER_MEASUREMENT}")
-      |> range(start: -300s)
       |> map(fn: (r) => ({_time: r._time, _value: r._value, unix_time: uint(v: r._time) / uint(v: 1000000)}))
   `
 
@@ -86,7 +111,7 @@ export async function getDevicePowerReadings() {
         }
         powerWattReadings.push({ time: o.unix_time, powerWatt })
 
-        const stmt = duck.prepare(
+        const stmt = _duck.prepare(
           `INSERT INTO device_power (mtime, power_watt) ` + `VALUES (?, ?);`,
         )
 
@@ -110,12 +135,20 @@ export async function getDevicePowerReadings() {
   })
 }
 
-export async function getIlluminanceReadings() {
-  const queryApi = influxdb.getQueryApi(process.env.INFLUX_ORG!)
+export async function getIlluminanceReadings(
+  _influxDb: InfluxDB,
+  _duck: DuckDb,
+  {
+    forSec = 300,
+    untilTime = -1,
+  }: { forSec?: number; untilTime?: number } = {},
+) {
+  const queryApi = _influxDb.getQueryApi(process.env.INFLUX_ORG!)
+  const timeRangeStr = getFluxTimeRangeStr({ forSec, untilTime })
   const fluxQuery = flux`
     import "math"
     from(bucket:"${process.env.INFLUX_ENV_READINGS_BUCKET!}")
-      |> range(start: -300s)
+      |> ${timeRangeStr}
       |> filter(fn: (r) => r._measurement == "${process.env.INFLUX_ENV_READINGS_MEASUREMENT}")
       |> filter(fn: (r) => r._field == "illuminance_lux" or r._field == "temp_c")
       |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
@@ -142,7 +175,7 @@ export async function getIlluminanceReadings() {
           tempC,
         })
 
-        const stmt = duck.prepare(
+        const stmt = _duck.prepare(
           `INSERT INTO illuminance (mtime, illuminance_lux, temp_c) ` +
             `VALUES (?, ?, ?);`,
         )
@@ -170,8 +203,8 @@ export async function getIlluminanceReadings() {
   })
 }
 
-async function initDuckTables() {
-  const ccpr = await duck.run(
+export async function initDuckTables(_duck: DuckDb) {
+  const ccpr = await _duck.run(
     `CREATE TABLE device_power
       (
         mtime TIMESTAMPTZ,
@@ -182,7 +215,7 @@ async function initDuckTables() {
   logger.info(
     `initDuckTables(): CREATE TABLE device_power: ${JSON.stringify(ccpr)}`,
   )
-  const cilr = await duck.run(
+  const cilr = await _duck.run(
     `CREATE TABLE illuminance
       (
         mtime TIMESTAMPTZ,
@@ -262,6 +295,49 @@ async function hasDeviceBeenOff(forSec: number = 300) {
   } catch (err) {
     logger.error(
       `hasDeviceBeenOff(): error while retrieving from DuckDB: ${err}`,
+    )
+  }
+  return null
+}
+
+export async function getDevicePowerStats(
+  _duck: DuckDb,
+  {
+    forSec = 300,
+    untilTime = -1,
+  }: { forSec?: number; untilTime?: number } = {},
+) {
+  const mtime = Math.floor(untilTime === -1 ? Date.now() : untilTime)
+  const stmt = await _duck.prepare(
+    `WITH 
+      agg_m AS (
+        SELECT
+          var_pop(power_watt) AS power_watt_var_pop,
+          avg(power_watt) AS power_watt_avg,
+          max(power_watt) AS power_watt_max,
+          min(power_watt) AS power_watt_min,
+          count(*) AS num_readings
+        FROM device_power
+        WHERE mtime >= (epoch_ms(?::BIGINT) AT TIME ZONE 'UTC' - INTERVAL (?) SECOND)::TIMESTAMPTZ
+        AND mtime <= (epoch_ms(?::BIGINT) AT TIME ZONE 'UTC')
+      )
+    SELECT power_watt_var_pop, power_watt_avg, power_watt_max, power_watt_min, num_readings FROM agg_m;`,
+  )
+
+  try {
+    const res = await stmt.all(mtime, forSec, mtime)
+    if (res && res[0]) {
+      return {
+        powerWattVarPop: Number.parseFloat(res[0].power_watt_var_pop!),
+        powerWattAvg: Number.parseFloat(res[0].power_watt_avg!),
+        powerWattMax: Number.parseFloat(res[0].power_watt_max!),
+        powerWattMin: Number.parseFloat(res[0].power_watt_min!),
+        numReadings: Number.parseInt(res[0].num_readings!),
+      }
+    }
+  } catch (err) {
+    logger.error(
+      `getDevicePowerStats(): error while retrieving from DuckDB: ${err}`,
     )
   }
   return null
@@ -644,12 +720,14 @@ async function shouldAlarmBePlayed({ now: _now = -1 }: { now?: number } = {}) {
   }) // in_bed within the last 14 hours
   const darkInfo = await hasItBeenDark({ refTime: now })
   const devicePowerInfo = await hasDeviceBeenOff()
+  const devicePowerStats = await getDevicePowerStats(duck)
 
   const decisionData = {
     lastButton: latestButtonEvent?.event_type,
     darkRatio: darkInfo?.darkRatio,
     offRatio: devicePowerInfo?.offRatio,
     lmWatt: devicePowerInfo?.lastMeasuredPowerWatt,
+    ...devicePowerStats,
   }
   logger.debug(
     `shouldAlarmBePlayed(): decisionData: ${JSON.stringify(decisionData)}`,
@@ -682,6 +760,30 @@ async function shouldAlarmBePlayed({ now: _now = -1 }: { now?: number } = {}) {
     (devicePowerInfo.offRatio <= 0.95 ||
       devicePowerInfo.lastMeasuredPowerWatt >= DEVICE_POWER_ON_THRESHOLD_WATT)
   ) {
+    return false
+  }
+
+  if (devicePowerStats) {
+    // power use is definitely above the maximum level seen during stand-by
+    // using the average has the effect of delaying the alarm,
+    // possibly as long as the sensor reading period (300 seconds by default)
+    if (devicePowerStats.powerWattAvg >= DEVICE_POWER_ON_THRESHOLD_WATT) {
+      return false
+    }
+
+    // power sensor is not reporting any data
+    if (devicePowerStats.numReadings < 1) {
+      return false
+    }
+
+    // device is likely in a transitional state between active, standby, sleep
+    if (
+      devicePowerStats.powerWattVarPop > DEVICE_POWER_VARIANCE_POP_THRESHOLD
+    ) {
+      return false
+    }
+  } else {
+    // do not play alarm just because the power sensor reading failed
     return false
   }
 
@@ -763,13 +865,13 @@ after any button event is received.
 */
 
 async function main() {
-  await initDuckTables()
+  await initDuckTables(duck)
   await initButtonEventTables()
 
-  const k = await getDevicePowerReadings()
+  const k = await getDevicePowerReadings(influxdb, duck)
   logger.info(`main(): getDevicePowerReadings(): ${JSON.stringify(k)}`)
 
-  const l = await getIlluminanceReadings()
+  const l = await getIlluminanceReadings(influxdb, duck)
   logger.info(`main(): getIlluminanceReadings(): ${JSON.stringify(l)}`)
 
   const duckDevicePower = await duck.all(
@@ -873,4 +975,6 @@ async function main() {
   logger.info(`HTTP server started on ${webServer.hostname}:${webServer.port}`)
 }
 
-main()
+if (require.main === module) {
+  main()
+}
