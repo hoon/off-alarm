@@ -177,3 +177,7 @@ out
 # DuckDB databases
 *.duckdb
 *.duckdb.wal
+
+# SQLite databases
+sensor.sqlite
+button_event.sqlite

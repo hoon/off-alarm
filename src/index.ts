@@ -1,51 +1,37 @@
 import { InfluxDB } from '@influxdata/influxdb-client'
 import { flux } from '@influxdata/influxdb-client'
-import { Database as DuckDb } from 'duckdb-async'
+import { Database } from 'bun:sqlite'
 import mqtt from 'mqtt'
 import { z } from 'zod'
 import pino from 'pino'
-const logger = pino()
+import { getVariancePop } from './statutils'
+const logger = pino({ level: process.env.LOG_LEVEL || 'info' })
 
-const influxdb = new InfluxDB({
-  url: process.env.INFLUX_URL!,
-  token: process.env.INFLUX_TOKEN,
-})
+async function getInfluxDb() {
+  try {
+    const influxdb = new InfluxDB({
+      url: process.env.INFLUX_URL!,
+      token: process.env.INFLUX_TOKEN!,
+    })
 
-/*
-  DuckDB UNIX time function quirk:
-  You need to include "AT TIME ZONE 'UTC'" when using epoch_ms() because it returns timestamp w/o timezone.
+    return influxdb
+  } catch (err) {
+    logger.error(`InfluxDB connection failed: ${err}`)
+    throw err
+  }
+}
 
-  If UNIX time 1722546770129 is '2024-08-01 21:12:50.129' in UTC,
-  epoch_ms(1722546770129) will return '2024-08-01 21:12:50.129' without time zone.
-
-  Simply casting the result of epoch_ms() to TIMESTAMPTZ will give you
-  '2024-08-01 21:12:50.129' in your local time zone,
-  e.g. '2024-08-01 21:12:50.129-04'
-
-  You have to explicitly state the time zone like the following to get the correct date time.
-  epoch_ms(1722546770129) AT TIME ZONE 'UTC'
-
-  This gives you '2024-08-01 17:12:50.129-04', which is correct.
-
-  This is the DuckDB epoch time conversion behavior as of version 1.0.0.
-  */
-
-const duck = await DuckDb.create(':memory:')
-const educk = await DuckDb.create('button_event.duckdb')
-
-const mqttClient = mqtt.connect(process.env.MQTT_SERVER_URI!, {
-  username: process.env.MQTT_USERNAME!,
-  password: process.env.MQTT_PASSWORD!,
-})
+const db = process.env.PERSIST_SENSOR_DATA
+  ? new Database('sensor.sqlite', { create: true })
+  : new Database(':memory:')
+const edb = new Database('button_event.sqlite', { create: true })
 
 const buttonEvent = z.object({
-  etime: z.date(),
+  etime: z.number(), // millisecond unix timestamp
   event_type: z.number(),
   temp_c: z.number().nullable(),
   illuminance_lux: z.number().nullable(),
 })
-
-type ButtonEvent = z.infer<typeof buttonEvent>
 
 enum ButtonEventType {
   InBed = 10,
@@ -59,6 +45,10 @@ const DEVICE_POWER_ON_THRESHOLD_WATT: number = Number.parseFloat(
 
 const DEVICE_POWER_VARIANCE_POP_THRESHOLD: number = Number.parseFloat(
   process.env.DEVICE_POWER_VARIANCE_POP_THRESHOLD || '3',
+)
+
+const ILLUMINANCE_DARK_THRESHOLD_LUX: number = Number.parseFloat(
+  process.env.ILLUMINANCE_DARK_THRESHOLD_LUX || '17',
 )
 
 function getFluxTimeRangeStr({
@@ -78,7 +68,7 @@ function getFluxTimeRangeStr({
 
 export async function getDevicePowerReadings(
   _influxDb: InfluxDB,
-  _duck: DuckDb,
+  _db: Database,
   {
     forSec = 300,
     untilTime = -1,
@@ -104,28 +94,30 @@ export async function getDevicePowerReadings(
         // console.log(o)
         // console.log(row)
         // console.log('')
-        const time = o._time
+        const time = Date.parse(o._time)
         const powerWatt = o._value
         if (powerWatt == undefined || powerWatt == null) {
           return
         }
-        powerWattReadings.push({ time: o.unix_time, powerWatt })
+        powerWattReadings.push({ time, powerWatt })
 
-        const stmt = _duck.prepare(
-          `INSERT INTO device_power (mtime, power_watt) ` + `VALUES (?, ?);`,
+        const stmt = _db.prepare(
+          `INSERT INTO device_power (mtime, power_watt) ` +
+            `VALUES ($mtime, $powerWatt);`,
         )
 
-        stmt.then(async (_stmt) => {
-          try {
-            await _stmt.run(o._time, powerWatt)
-          } catch (err) {
-            logger.warn(
-              `getDevicePowerReadings(): DuckDB device_power table insert error: ${err}`,
-            )
-          } finally {
-            await _stmt.finalize()
-          }
-        })
+        try {
+          stmt.run({ $mtime: time, $powerWatt: powerWatt })
+        } catch (err) {
+          logger.warn(
+            `getDevicePowerReadings(): device_power table insert error: ${err}, values ${JSON.stringify(
+              {
+                $mtime: time,
+                $powerWatt: powerWatt,
+              },
+            )}`,
+          )
+        }
       },
       error: reject,
       complete() {
@@ -137,7 +129,7 @@ export async function getDevicePowerReadings(
 
 export async function getIlluminanceReadings(
   _influxDb: InfluxDB,
-  _duck: DuckDb,
+  _db: Database,
   {
     forSec = 300,
     untilTime = -1,
@@ -175,25 +167,25 @@ export async function getIlluminanceReadings(
           tempC,
         })
 
-        const stmt = _duck.prepare(
+        const stmt = _db.prepare(
           `INSERT INTO illuminance (mtime, illuminance_lux, temp_c) ` +
-            `VALUES (?, ?, ?);`,
+            `VALUES ($mtime, $illuminanceLux, $tempC);`,
         )
 
-        stmt.then(async (_stmt) => {
-          try {
-            logger.debug(
-              `getIlluminanceReadings(): inserting {${o._time}, ${illuminanceLux}}}`,
-            )
-            await _stmt.run(o._time, illuminanceLux, tempC)
-          } catch (err) {
-            logger.warn(
-              `getIlluminanceReadings(): DuckDB illuminance insert error: ${err}`,
-            )
-          } finally {
-            await _stmt.finalize()
-          }
-        })
+        try {
+          logger.debug(
+            `getIlluminanceReadings(): inserting {${o._time}, ${illuminanceLux}}}`,
+          )
+          stmt.run({
+            $mtime: o.unix_time,
+            $illuminanceLux: illuminanceLux,
+            $tempC: tempC,
+          })
+        } catch (err) {
+          logger.warn(
+            `getIlluminanceReadings(): database illuminance insert error: ${err}`,
+          )
+        }
       },
       error: reject,
       complete() {
@@ -203,54 +195,63 @@ export async function getIlluminanceReadings(
   })
 }
 
-export async function initDuckTables(_duck: DuckDb) {
-  const ccpr = await _duck.run(
-    `CREATE TABLE device_power
+export async function initSqliteTables(_db: Database) {
+  try {
+    const cpr = _db.run(
+      `CREATE TABLE IF NOT EXISTS device_power
       (
-        mtime TIMESTAMPTZ,
-        power_watt INT,
+        mtime INTEGER,
+        power_watt INTEGER,
         PRIMARY KEY (mtime)
       );`,
-  )
-  logger.info(
-    `initDuckTables(): CREATE TABLE device_power: ${JSON.stringify(ccpr)}`,
-  )
-  const cilr = await _duck.run(
-    `CREATE TABLE illuminance
+    )
+    logger.info(
+      `initSqliteTables(): CREATE TABLE device_power: ${JSON.stringify(cpr)}`,
+    )
+  } catch (err) {
+    logger.warn(`initSqliteTables(): device_power table create error: ${err}`)
+  }
+
+  try {
+    const cilr = _db.run(
+      `CREATE TABLE IF NOT EXISTS illuminance
       (
-        mtime TIMESTAMPTZ,
-        illuminance_lux FLOAT,
-        temp_c FLOAT,
+        mtime INTEGER,
+        illuminance_lux REAL,
+        temp_c REAL,
         PRIMARY KEY (mtime)
       );`,
-  )
-  logger.info(
-    `initDuckTables(): CREATE TABLE illuminance: ${JSON.stringify(cilr)}`,
-  )
+    )
+    logger.info(
+      `initSqliteTables(): CREATE TABLE illuminance: ${JSON.stringify(cilr)}`,
+    )
+  } catch (err) {
+    logger.warn(`initSqliteTables(): illuminance table create error: ${err}`)
+  }
 }
 
 // TODO: make it accept refTime to allow for testing on example data set
-async function hasDeviceBeenOff(forSec: number = 300) {
+async function hasDeviceBeenOff(_db: Database, forSec: number = 300) {
   const countOffVsAllSql = `
     WITH
       off_m AS (
         SELECT COUNT(*) AS num_device_off
           FROM device_power
-          WHERE mtime >= (epoch_ms(?::BIGINT) AT TIME ZONE 'UTC'- INTERVAL (?) SECOND)::TIMESTAMPTZ
-          AND mtime <= (epoch_ms(?::BIGINT) AT TIME ZONE 'UTC')
-          AND power_watt < ?
+          WHERE mtime >= $unixTimeMs - $forMs
+          AND mtime <= $unixTimeMs
+          AND power_watt < $devicePowerOnThresholdWatt
       ),
       all_m AS (
         SELECT COUNT(*) AS num_all
           FROM device_power
-          WHERE mtime >= (epoch_ms(?::BIGINT) AT TIME ZONE 'UTC' - INTERVAL (?) SECOND)::TIMESTAMPTZ
-          AND mtime <= (epoch_ms(?::BIGINT) AT TIME ZONE 'UTC')
+          WHERE mtime >= $unixTimeMs - $forMs
+          AND mtime <= $unixTimeMs
       ),
       avg_m AS (
         SELECT AVG(power_watt) AS avg_power_watt
           FROM device_power
-          WHERE mtime >= (epoch_ms(?::BIGINT) AT TIME ZONE 'UTC' - INTERVAL (?) SECOND)::TIMESTAMPTZ
-          AND mtime <= (epoch_ms(?::BIGINT) AT TIME ZONE 'UTC')
+          WHERE mtime >= $unixTimeMs - $forMs
+          AND mtime <= $unixTimeMs
       ),
       last_m AS (
         SELECT power_watt AS last_m_power_watt
@@ -268,79 +269,120 @@ async function hasDeviceBeenOff(forSec: number = 300) {
   ;`
 
   const unixTimeMs = Date.now()
-  const stmt = await duck.prepare(countOffVsAllSql)
+  const stmt = _db.prepare(countOffVsAllSql)
   try {
-    const res = await stmt.all(
-      unixTimeMs,
-      forSec,
-      unixTimeMs,
-      DEVICE_POWER_ON_THRESHOLD_WATT,
-      unixTimeMs,
-      forSec,
-      unixTimeMs,
-      unixTimeMs,
-      forSec,
-      unixTimeMs,
-    )
+    const rows = stmt.all({
+      $unixTimeMs: unixTimeMs,
+      $forMs: forSec * 1000,
+      $devicePowerOnThresholdWatt: DEVICE_POWER_ON_THRESHOLD_WATT,
+    })
 
-    if (res && res[0]) {
+    if (rows && rows[0]) {
+      const _r = rows[0] as any
       return {
-        numDeviceOff: Number.parseInt(res[0].num_device_off!),
-        numAll: Number.parseInt(res[0].num_all!),
-        offRatio: Number.parseFloat(res[0].off_ratio!),
-        averagePowerWatt: Number.parseFloat(res[0].avg_power_watt!),
-        lastMeasuredPowerWatt: Number.parseInt(res[0].last_m_power_watt!),
+        numDeviceOff: Number.parseInt(_r.num_device_off!),
+        numAll: Number.parseInt(_r.num_all!),
+        offRatio: Number.parseFloat(_r.off_ratio!),
+        averagePowerWatt: Number.parseFloat(_r.avg_power_watt!),
+        lastMeasuredPowerWatt: Number.parseInt(_r.last_m_power_watt!),
       }
     }
   } catch (err) {
     logger.error(
-      `hasDeviceBeenOff(): error while retrieving from DuckDB: ${err}`,
+      `hasDeviceBeenOff(): error while retrieving from database: ${err}`,
     )
   }
   return null
 }
 
 export async function getDevicePowerStats(
-  _duck: DuckDb,
+  _db: Database,
   {
     forSec = 300,
     untilTime = -1,
   }: { forSec?: number; untilTime?: number } = {},
 ) {
   const mtime = Math.floor(untilTime === -1 ? Date.now() : untilTime)
-  const stmt = await _duck.prepare(
+  // SQLite doesn't support var_pop()
+  const stmt = _db.prepare(
     `WITH 
       agg_m AS (
         SELECT
-          var_pop(power_watt) AS power_watt_var_pop,
           avg(power_watt) AS power_watt_avg,
           max(power_watt) AS power_watt_max,
           min(power_watt) AS power_watt_min,
           count(*) AS num_readings
         FROM device_power
-        WHERE mtime >= (epoch_ms(?::BIGINT) AT TIME ZONE 'UTC' - INTERVAL (?) SECOND)::TIMESTAMPTZ
-        AND mtime <= (epoch_ms(?::BIGINT) AT TIME ZONE 'UTC')
+        WHERE mtime >= $mtime - $forMs
+        AND mtime <= $mtime
       )
-    SELECT power_watt_var_pop, power_watt_avg, power_watt_max, power_watt_min, num_readings FROM agg_m;`,
+    SELECT
+      power_watt_avg, power_watt_max, power_watt_min, num_readings
+      FROM agg_m;`,
   )
 
+  interface DevicePowerStats {
+    powerWattAvg: number
+    powerWattMax: number
+    powerWattMin: number
+    numReadings: number
+    powerWattVarPop: number
+  }
+
+  const stats: Partial<DevicePowerStats> = {
+    powerWattAvg: undefined,
+    powerWattMax: undefined,
+    powerWattMin: undefined,
+    numReadings: undefined,
+    powerWattVarPop: undefined,
+  }
+
   try {
-    const res = await stmt.all(mtime, forSec, mtime)
-    if (res && res[0]) {
-      return {
-        powerWattVarPop: Number.parseFloat(res[0].power_watt_var_pop!),
-        powerWattAvg: Number.parseFloat(res[0].power_watt_avg!),
-        powerWattMax: Number.parseFloat(res[0].power_watt_max!),
-        powerWattMin: Number.parseFloat(res[0].power_watt_min!),
-        numReadings: Number.parseInt(res[0].num_readings!),
-      }
+    const rows = stmt.all({ $mtime: mtime, $forMs: forSec * 1000 })
+    if (rows && rows[0]) {
+      const _r = rows[0] as any
+      stats.powerWattAvg = Number.parseFloat(_r.power_watt_avg!)
+      stats.powerWattMax = Number.parseFloat(_r.power_watt_max!)
+      stats.powerWattMin = Number.parseFloat(_r.power_watt_min!)
+      stats.numReadings = Number.parseInt(_r.num_readings!)
     }
   } catch (err) {
     logger.error(
-      `getDevicePowerStats(): error while retrieving from DuckDB: ${err}`,
+      `getDevicePowerStats(): error while retrieving from database: ${err}`,
     )
+    return null
   }
-  return null
+
+  const allValuesStmt = _db.prepare(
+    `SELECT power_watt
+      FROM device_power
+      WHERE mtime >= $mtime - $forMs
+      AND mtime <= $mtime;`,
+  )
+  try {
+    const allValues = allValuesStmt.all({
+      $mtime: mtime,
+      $forMs: forSec * 1000,
+    })
+
+    if (allValues && allValues.length > 0) {
+      const allValuesNums = allValues.map((v: any) => v.power_watt as number)
+      const variancePop = getVariancePop(allValuesNums)
+      stats.powerWattVarPop = variancePop
+    }
+  } catch (err) {
+    logger.error(
+      `getDevicePowerStats(): error while retrieving from database: ${err}`,
+    )
+    return null
+  }
+
+  for (const [_, value] of Object.entries(stats)) {
+    if (value === undefined) {
+      return null
+    }
+  }
+  return stats as DevicePowerStats
 }
 
 /*
@@ -348,7 +390,8 @@ export async function getDevicePowerStats(
  * calculates the ratio of measurements where the measured illuminance
  * indicates it was dark vs ones that indicate it was bright.
  *
- * Being dark is defined as below 20 lux.
+ * Being dark is defined as below $ILLUMINANCE_DARK_THRESHOLD_LUX lux,
+ * which is 17 by default.
  *
  * Arguments:
  *  forSec: number of seconds in the time period to retrieve
@@ -364,27 +407,30 @@ export async function getDevicePowerStats(
  *  darkRatio: numDark / numAll
  *  lastIlluminanceLux: the last illuminance measurement value in the time period
  */
-async function hasItBeenDark({
-  forSec = 300,
-  refTime = -1,
-}: {
-  forSec?: number
-  refTime?: number
-} = {}) {
+async function hasItBeenDark(
+  _db: Database,
+  {
+    forSec = 300,
+    refTime = -1,
+  }: {
+    forSec?: number
+    refTime?: number
+  } = {},
+) {
   const countDarkVsAllSql = `
     WITH
       off_m AS (
         SELECT COUNT(*) AS num_dark
           FROM illuminance
-          WHERE mtime >= (epoch_ms(?::BIGINT) AT TIME ZONE 'UTC' - INTERVAL (?) SECOND)
-          AND mtime <= (epoch_ms(?::BIGINT) AT TIME ZONE 'UTC')
-          AND illuminance_lux < 20
+          WHERE mtime >= $mtime - $forMs
+          AND mtime <= $mtime
+          AND illuminance_lux < $illuminanceDarkThresholdLux
       ),
       all_m AS (
         SELECT COUNT(*) AS num_all
           FROM illuminance
-          WHERE mtime >= (epoch_ms(?::BIGINT) AT TIME ZONE 'UTC' - INTERVAL (?) SECOND)
-          AND mtime <= (epoch_ms(?::BIGINT) AT TIME ZONE 'UTC')
+          WHERE mtime >= $mtime - $forMs
+          AND mtime <= $mtime
       ),
       last_m AS (
         SELECT illuminance_lux AS last_m_illuminance_lux
@@ -395,33 +441,44 @@ async function hasItBeenDark({
     SELECT
         off_m.num_dark,
         all_m.num_all,
-        off_m.num_dark / all_m.num_all AS dark_ratio,
+        CAST(off_m.num_dark AS REAL) / all_m.num_all AS dark_ratio,
         last_m.last_m_illuminance_lux
       FROM off_m, all_m, last_m
     ;`
 
   const mtime = Math.floor(refTime === -1 ? Date.now() : refTime)
-  const stmt = await duck.prepare(countDarkVsAllSql)
+  logger.info(
+    `hasItBeenDark(): mtime = ${mtime}, forSec = ${forSec}, refTime = ${refTime}`,
+  )
+  const stmt = _db.prepare(countDarkVsAllSql)
   try {
-    const res = await stmt.all(mtime, forSec, mtime, mtime, forSec, mtime)
+    const rows = stmt.all({
+      $mtime: mtime,
+      $forMs: forSec * 1000,
+      $illuminanceDarkThresholdLux: ILLUMINANCE_DARK_THRESHOLD_LUX,
+    })
 
-    if (res && res[0]) {
+    if (rows && rows[0]) {
+      const _r = rows[0] as any
+      logger.debug(`hasItBeenDark(): query raw result: ${JSON.stringify(_r)}`)
       return {
-        numDark: parseInt(res[0].num_dark),
-        numAll: parseInt(res[0].num_all),
-        darkRatio: !Number.isNaN(res[0].dark_ratio)
-          ? parseFloat(res[0].dark_ratio)
+        numDark: parseInt(_r.num_dark),
+        numAll: parseInt(_r.num_all),
+        darkRatio: !Number.isNaN(_r.dark_ratio)
+          ? parseFloat(_r.dark_ratio)
           : null,
-        lastIlluminanceLux: parseFloat(res[0].last_m_illuminance_lux),
+        lastIlluminanceLux: parseFloat(_r.last_m_illuminance_lux),
       }
     }
   } catch (err) {
-    logger.error(`hasItBeenDark(): error while retrieving from DuckDB: ${err}`)
+    logger.error(
+      `hasItBeenDark(): error while retrieving from database: ${err}`,
+    )
   }
   return null
 }
 
-async function getAllIlluminance() {
+async function getAllIlluminance(_db: Database) {
   const illuminanceSql = `
     SELECT mtime, illuminance_lux
       FROM illuminance
@@ -429,35 +486,46 @@ async function getAllIlluminance() {
       LIMIT 10;
   `
   try {
-    const res = await duck.all(illuminanceSql)
-    logger.info(`getAllIlluminance(): ${res}`)
+    const stmt = _db.prepare(illuminanceSql)
+    const rows = stmt.all()
+    logger.info(`getAllIlluminance(): ${JSON.stringify(rows)}`)
   } catch (err) {
-    logger.error(`getAllIlluminance(): error retrievign from DuckDB: ${err}`)
+    logger.error(`getAllIlluminance(): error retrievign from database: ${err}`)
   }
 }
 
-async function playToneOnDevice(tone = 1) {
+async function playToneOnDevice(mqttClient: mqtt.MqttClient, tone = 1) {
   return mqttClient.publishAsync(
     process.env.MQTT_TOPIC_BUTTONS_COMMAND!,
     `n=playTone;p=${tone}`,
   )
 }
 
-async function flushOldMeasurements({ refTime = -1, secToKeep = 300 }) {
-  const stmt = await duck.prepare(`
+async function flushOldMeasurements(
+  _db: Database,
+  {
+    refTime = -1,
+    toKeepSec = 300,
+  }: { refTime?: number; toKeepSec?: number } = {},
+) {
+  const stmt = _db.prepare(`
     DELETE
       FROM device_power
-      WHERE mtime < (epoch_ms(?::BIGINT) AT TIME ZONE 'UTC' - INTERVAL (?) SECOND)::TIMESTAMPTZ
+      WHERE mtime < ($mtime - $toKeepMs)
       ;
     DELETE
       FROM illuminance
-      WHERE mtime < (epoch_ms(?::BIGINT) AT TIME ZONE 'UTC' - INTERVAL (?) SECOND)::TIMESTAMPTZ
+      WHERE mtime < ($mtime - $toKeepMs)
     ;
   `)
 
   const time = refTime === -1 ? Date.now() : refTime
   try {
-    await stmt.run(time, secToKeep, time, secToKeep)
+    const rows = stmt.run({
+      $mtime: time,
+      $toKeepMs: toKeepSec * 1000,
+    })
+    logger.info(`flushOldMeasurements(): ${JSON.stringify(rows)}`)
   } catch (err) {
     logger.warn(
       `flushOldMeasurements(): Error occurred while attempting to delete old measurements: ${err}`,
@@ -465,7 +533,10 @@ async function flushOldMeasurements({ refTime = -1, secToKeep = 300 }) {
   }
 }
 
-async function insertDevicePowerReading(devicePowerReadingStr: string) {
+async function insertDevicePowerReading(
+  _db: Database,
+  devicePowerReadingStr: string,
+) {
   const readObj = JSON.parse(devicePowerReadingStr)
 
   const devicePowerSensorReadingSchema = z.object({
@@ -496,28 +567,33 @@ async function insertDevicePowerReading(devicePowerReadingStr: string) {
     return
   }
 
-  const stmt = duck.prepare(
+  const stmt = _db.prepare(
     `INSERT INTO device_power (mtime, power_watt) ` +
-      `VALUES (epoch_ms(?::BIGINT) AT TIME ZONE 'UTC', ?);`,
+      `VALUES ($mtime, $powerWatt);`,
   )
 
-  stmt.then(async (_stmt) => {
-    try {
-      await _stmt.run(
-        Date.now(), // k.data.StatusSNS.Time is in Amsterdam time because that's where the Tasmota binary was compiled
-        k.data.StatusSNS.ENERGY.Power,
-      )
-    } catch (err) {
-      logger.warn(
-        `insertDevicePowerReading: DuckDB device_power table insert error: ${err}`,
-      )
-    } finally {
-      await _stmt.finalize()
-    }
-  })
+  const toInsert = {
+    $mtime: Date.now(),
+    $powerWatt: k.data.StatusSNS.ENERGY.Power,
+  }
+  try {
+    const rows = stmt.run(toInsert)
+    logger.info(
+      `insertDevicePowerReading(): ${JSON.stringify(rows)}, ${JSON.stringify(toInsert)}`,
+    )
+  } catch (err) {
+    logger.warn(
+      `insertDevicePowerReading: device_power table insert error: ${err}, values ${JSON.stringify(
+        toInsert,
+      )}`,
+    )
+  }
 }
 
-async function insertIlluminanceSensorsReading(envSensorsReadingStr: string) {
+async function insertIlluminanceSensorsReading(
+  _db: Database,
+  envSensorsReadingStr: string,
+) {
   const readObj = JSON.parse(envSensorsReadingStr)
 
   const envSensorsReadingSchema = z.object({
@@ -550,36 +626,37 @@ async function insertIlluminanceSensorsReading(envSensorsReadingStr: string) {
   }
 
   // we only care about the illuminance from the sensor readings
-  const stmt = duck.prepare(
+  const stmt = _db.prepare(
     `INSERT INTO illuminance (mtime, illuminance_lux, temp_c) ` +
-      `VALUES (epoch_ms(?::BIGINT) AT TIME ZONE 'UTC', ?, ?);`,
+      `VALUES ($mtime, $illuminanceLux, $tempC);`,
   )
 
-  stmt.then(async (_stmt) => {
-    try {
-      await _stmt.run(
-        Date.now(), // k.data.StatusSNS.Time is in Amsterdam time because that's where Tasmota binary was compiled
-        k.data.StatusSNS.TSL2561.Illuminance,
-        k.data.StatusSNS.BME280.Temperature,
-      )
-    } catch (err) {
-      logger.warn(
-        `insertIlluminanceSensorsReading(): DuckDB illuminance table insert error: ${err}`,
-      )
-    } finally {
-      await _stmt.finalize()
+  try {
+    const toInsert = {
+      // k.data.StatusSNS.Time is in Amsterdam time because that's where Tasmota binary was compiled
+      $mtime: Date.now(),
+      $illuminanceLux: k.data.StatusSNS.TSL2561.Illuminance,
+      $tempC: k.data.StatusSNS.BME280.Temperature,
     }
-  })
+    const insertResult = stmt.run(toInsert)
+    logger.info(
+      `insertIlluminanceSensorsReading(): ${JSON.stringify(insertResult)}, ${JSON.stringify(toInsert)}`,
+    )
+  } catch (err) {
+    logger.warn(
+      `insertIlluminanceSensorsReading(): illuminance reading database insert error: ${err}`,
+    )
+  }
 }
 
-async function initButtonEventTables() {
-  const ccpr = await educk.run(
+async function initButtonEventTables(_edb: Database) {
+  const ccpr = await _edb.run(
     `CREATE TABLE IF NOT EXISTS button_event
       (
-        etime TIMESTAMPTZ,
-        event_type INT,
-        temp_c FLOAT,
-        illuminance_lux FLOAT,
+        etime INTEGER,
+        event_type INTEGER,
+        temp_c REAL,
+        illuminance_lux REAL,
         PRIMARY KEY (etime)
       );`,
   )
@@ -587,7 +664,7 @@ async function initButtonEventTables() {
     `initButtonEventTables(): CREATE button_event table: ${JSON.stringify(ccpr)}`,
   )
 
-  const cidx = await educk.run(
+  const cidx = await _edb.run(
     `CREATE INDEX IF NOT EXISTS be_event_type_idx ON button_event(event_type);`,
   )
   logger.info(
@@ -595,17 +672,17 @@ async function initButtonEventTables() {
   )
 }
 
-async function insertButtonEvent(buttonEventStr: string) {
+async function insertButtonEvent(
+  _db: Database,
+  _edb: Database,
+  mqttClient: mqtt.MqttClient,
+  buttonEventStr: string,
+) {
   const evStr = buttonEventStr.trim()
-  const stmt = await educk.prepare(
+  const stmt = _edb.prepare(
     `INSERT INTO button_event (etime, event_type, temp_c, illuminance_lux) ` +
-      `VALUES (epoch_ms(?::BIGINT) AT TIME ZONE 'UTC', ?, ?, ?);`,
+      `VALUES ($etime, $eventType, $tempC, $illuminanceLux);`,
   )
-  // Object.keys(eventStrsToInt).forEach(async (evKey) => {
-  //   if (evStr === evKey) {
-  //     await educk.prepare(stmt, Date.now(), eventStrsToInt[evKey])
-  //   }
-  // })
 
   const buttonEventResponse = [
     { eventName: 'in_bed', eventType: 10, responseTone: 1 },
@@ -617,51 +694,84 @@ async function insertButtonEvent(buttonEventStr: string) {
     (bert) => bert.eventName === evStr,
   )
   if (evtResponse) {
-    const latestEnv = await duck.all(
+    const res = _db.prepare(
       'SELECT mtime, illuminance_lux, temp_c FROM illuminance ' +
         'ORDER BY mtime DESC ' +
         'LIMIT 1;',
     )
+    const rows = res.all()
     let illuminanceLux: number | null = null
     let tempC: number | null = null
 
-    if (latestEnv && latestEnv[0]) {
-      if (latestEnv[0].temp_c) {
-        tempC = parseFloat(latestEnv[0].temp_c)
+    if (rows && rows[0]) {
+      logger.debug(
+        `insertButtonEvent(): latestEnv = ${JSON.stringify(rows[0])}`,
+      )
+      const latestEnv = rows[0] as any
+      if (Number.isFinite(latestEnv.temp_c)) {
+        tempC = parseFloat(latestEnv.temp_c)
+      } else {
+        logger.info(
+          `insertButtonEvent(): temp_c is not a finite number: ${latestEnv.temp_c}`,
+        )
       }
-      if (latestEnv[0].illuminance_lux) {
-        illuminanceLux = parseFloat(latestEnv[0].illuminance_lux)
+      if (Number.isFinite(latestEnv.illuminance_lux)) {
+        illuminanceLux = parseFloat(latestEnv.illuminance_lux)
+      } else {
+        logger.info(
+          `insertButtonEvent(): illuminance_lux is not a finite number: ${latestEnv.illuminance_lux}`,
+        )
       }
     }
 
-    await stmt.run(Date.now(), evtResponse.eventType, tempC, illuminanceLux)
-    await playToneOnDevice(evtResponse.responseTone)
+    try {
+      logger.debug(
+        `insertButtonEvent(): inserting button_event: ${JSON.stringify({
+          etime: Date.now(),
+          eventType: evtResponse.eventType,
+          tempC,
+          illuminanceLux,
+        })}`,
+      )
+      stmt.run({
+        $etime: Date.now(),
+        $eventType: evtResponse.eventType,
+        $tempC: tempC,
+        $illuminanceLux: illuminanceLux,
+      })
+    } catch (err) {
+      logger.warn(
+        `insertButtonEvent(): database button_event insert error: ${err}`,
+      )
+    }
+    await playToneOnDevice(mqttClient, evtResponse.responseTone)
   }
 
   if (evStr === 'check_status') {
-    const latestButtonEvent = await getLatestButtonEvent()
+    const latestButtonEvent = await getLatestButtonEvent(_edb)
     if (latestButtonEvent) {
       const er = buttonEventResponse.find(
         (r) => r.eventType === latestButtonEvent.event_type,
       )
       if (er) {
-        await playToneOnDevice(er.responseTone)
+        await playToneOnDevice(mqttClient, er.responseTone)
       }
     }
   }
 }
 
-async function getLatestIlluminanceReading() {
-  const res = await duck.all(
+async function getLatestIlluminanceReading(_db: Database) {
+  const res = await _db.prepare(
     `SELECT mtime, illuminance_lux FROM illuminance ORDER BY mtime DESC LIMIT 1;`,
   )
+  const rows = res.all()
 
   const IlluminaceMeasurement = z.object({
     mtime: z.date(),
     illuminance_lux: z.number(),
   })
 
-  const parseRes = await IlluminaceMeasurement.safeParseAsync(res[0])
+  const parseRes = await IlluminaceMeasurement.safeParseAsync(rows[0])
   if (parseRes.error) {
     logger.error(
       'isItDarkRightNow(): illuminance reading parsing failed: ' +
@@ -674,8 +784,8 @@ async function getLatestIlluminanceReading() {
   return lastIlluminance
 }
 
-async function isItDarkRightNow() {
-  const lastIlluminance = await getLatestIlluminanceReading()
+async function isItDarkRightNow(_db: Database) {
+  const lastIlluminance = await getLatestIlluminanceReading(_db)
   if (!lastIlluminance) {
     return null
   }
@@ -683,28 +793,39 @@ async function isItDarkRightNow() {
   return { ...lastIlluminance, isDark: lastIlluminance.illuminance_lux < 20 }
 }
 
-async function getLatestButtonEvent({
-  sinceUnixTimestamp = 0,
-}: { sinceUnixTimestamp?: number } = {}) {
+async function getLatestButtonEvent(
+  _edb: Database,
+  { sinceUnixTimestamp = 0 }: { sinceUnixTimestamp?: number } = {},
+) {
   logger.debug(
     `getLatestButtonEvent(): sinceUnixTimestamp = ${sinceUnixTimestamp}`,
   )
-  const stmt = await educk.prepare(
-    `SELECT etime, event_type, temp_c, illuminance_lux ` +
-      `FROM button_event ` +
-      `WHERE etime >= epoch_ms(?::BIGINT) AT TIME ZONE 'UTC' ` +
-      `ORDER BY etime DESC LIMIT 1;`,
+  const stmt = _edb.prepare(
+    `
+    SELECT etime, event_type, temp_c, illuminance_lux
+      FROM button_event
+      WHERE etime >= $sinceUnixTimestamp
+      ORDER BY etime DESC LIMIT 1;
+    `,
   )
-  const res = await stmt.all(sinceUnixTimestamp)
+  stmt.run({ $sinceUnixTimestamp: sinceUnixTimestamp })
+  const rows = stmt.all()
 
-  const parseRes = await buttonEvent.safeParseAsync(res[0])
+  const parseRes = await buttonEvent.safeParseAsync(rows[0])
   if (parseRes.success) {
     return parseRes.data!
   }
+  logger.info(
+    'getLatestButtonEvent(): button_event parsing failed: ' + parseRes.error,
+  )
   return null
 }
 
-async function shouldAlarmBePlayed({ now: _now = -1 }: { now?: number } = {}) {
+async function shouldAlarmBePlayed(
+  _db: Database,
+  _edb: Database,
+  { now: _now = -1 }: { now?: number } = {},
+) {
   // check if the latest button event is in_bed (=10)
   // check if the latest button event is from less than 14 hours ago
   // check if it's been consistently dark for the last X minutes
@@ -714,13 +835,18 @@ async function shouldAlarmBePlayed({ now: _now = -1 }: { now?: number } = {}) {
   // return true if all of the above are true
 
   const now = _now === -1 ? Date.now() : _now
+  const sinceUnixTimestamp = now - 14 * 60 * 60 * 1000
 
-  const latestButtonEvent = await getLatestButtonEvent({
-    sinceUnixTimestamp: now - 14 * 60 * 60 * 1000,
+  logger.info(
+    `shouldAlarmBePlayed(): now = ${now}, sinceUnixTimestamp = ${sinceUnixTimestamp}`,
+  )
+
+  const latestButtonEvent = await getLatestButtonEvent(_edb, {
+    sinceUnixTimestamp: sinceUnixTimestamp,
   }) // in_bed within the last 14 hours
-  const darkInfo = await hasItBeenDark({ refTime: now })
-  const devicePowerInfo = await hasDeviceBeenOff()
-  const devicePowerStats = await getDevicePowerStats(duck)
+  const darkInfo = await hasItBeenDark(_db, { refTime: now })
+  const devicePowerInfo = await hasDeviceBeenOff(_db)
+  const devicePowerStats = await getDevicePowerStats(_db)
 
   const decisionData = {
     lastButton: latestButtonEvent?.event_type,
@@ -737,6 +863,9 @@ async function shouldAlarmBePlayed({ now: _now = -1 }: { now?: number } = {}) {
     latestButtonEvent?.event_type !== ButtonEventType.InBed &&
     latestButtonEvent?.event_type !== ButtonEventType.Awake
   ) {
+    logger.debug(
+      `shouldAlarmBePlayed(): latest button press type is neither InBed or Awake`,
+    )
     return false
   }
 
@@ -744,14 +873,20 @@ async function shouldAlarmBePlayed({ now: _now = -1 }: { now?: number } = {}) {
   // TODO: We may want to do this only in the morning, but will leave as is
   // for now
   if (latestButtonEvent.event_type === ButtonEventType.Awake) {
-    if (now - latestButtonEvent.etime.getTime() > 15 * 60 * 1000) {
+    if (now - latestButtonEvent.etime > 15 * 60 * 1000) {
       return true
     }
+    logger.debug(
+      `shouldAlarmBePlayed(): latest button press type is Awake, but it was less than 15 minutes ago`,
+    )
     return false
   }
 
   // in_bed button was pressed less than 3 minutes ago
-  if (now - latestButtonEvent.etime.getTime() < 3 * 60 * 1000) {
+  if (now - latestButtonEvent.etime < 3 * 60 * 1000) {
+    logger.debug(
+      `shouldAlarmBePlayed(): latest button press type is InBed, but it was less than 3 minutes ago`,
+    )
     return false
   }
 
@@ -760,6 +895,9 @@ async function shouldAlarmBePlayed({ now: _now = -1 }: { now?: number } = {}) {
     (devicePowerInfo.offRatio <= 0.95 ||
       devicePowerInfo.lastMeasuredPowerWatt >= DEVICE_POWER_ON_THRESHOLD_WATT)
   ) {
+    logger.debug(
+      `shouldAlarmBePlayed(): device power level is not within thresholds`,
+    )
     return false
   }
 
@@ -768,11 +906,17 @@ async function shouldAlarmBePlayed({ now: _now = -1 }: { now?: number } = {}) {
     // using the average has the effect of delaying the alarm,
     // possibly as long as the sensor reading period (300 seconds by default)
     if (devicePowerStats.powerWattAvg >= DEVICE_POWER_ON_THRESHOLD_WATT) {
+      logger.debug(
+        `shouldAlarmBePlayed(): device power average is above threshold`,
+      )
       return false
     }
 
     // power sensor is not reporting any data
     if (devicePowerStats.numReadings < 1) {
+      logger.debug(
+        `shouldAlarmBePlayed(): device power sensor is not reporting any data`,
+      )
       return false
     }
 
@@ -780,14 +924,21 @@ async function shouldAlarmBePlayed({ now: _now = -1 }: { now?: number } = {}) {
     if (
       devicePowerStats.powerWattVarPop > DEVICE_POWER_VARIANCE_POP_THRESHOLD
     ) {
+      logger.debug(
+        `shouldAlarmBePlayed(): device power variance is above threshold`,
+      )
       return false
     }
   } else {
     // do not play alarm just because the power sensor reading failed
+    logger.debug(
+      `shouldAlarmBePlayed(): device power sensor stats couldn't be read, do not play alarm`,
+    )
     return false
   }
 
   if (darkInfo?.darkRatio && darkInfo.darkRatio > 0.95) {
+    logger.debug(`shouldAlarmBePlayed(): illuminance is below threshold`)
     return true
   }
 
@@ -804,30 +955,40 @@ async function shouldAlarmBePlayed({ now: _now = -1 }: { now?: number } = {}) {
       ?.value!,
   )
   if (hour >= 6 && hour <= 13) {
+    logger.debug(
+      `shouldAlarmBePlayed(): it's past 6 AM in the morning, ignore illuminance and play alarm`,
+    )
     return true
   }
 
   return false
 }
 
-async function getButtonEvents({
-  forSec = 60 * 60 * 24 * 2,
-  refTime = -1,
-}: {
-  forSec?: number
-  refTime?: number
-} = {}) {
+async function getButtonEvents(
+  _edb: Database,
+  {
+    forSec = 60 * 60 * 24 * 2,
+    refTime = -1,
+  }: {
+    forSec?: number
+    refTime?: number
+  } = {},
+) {
   const sql =
     `SELECT etime, event_type, temp_c, illuminance_lux ` +
     `FROM button_event ` +
-    `WHERE etime >= epoch_ms(?::BIGINT) AT TIME ZONE 'UTC' - INTERVAL (?) SECOND ` +
-    `AND etime <= epoch_ms(?::BIGINT) AT TIME ZONE 'UTC' ` +
+    `WHERE etime >= $unixTimeMs - $forMs ` +
+    `AND etime <= $unixTimeMs ` +
     `ORDER BY etime DESC;`
 
   const unixTimeMs = refTime === -1 ? Date.now() : refTime
 
-  const stmt = await educk.prepare(sql)
-  const res = await stmt.all(unixTimeMs, forSec, unixTimeMs)
+  const stmt = _edb.prepare(sql)
+  stmt.run({
+    $unixTimeMs: unixTimeMs,
+    $forMs: forSec * 1000,
+  })
+  const res = stmt.all()
 
   const buttonEventArray = z.array(buttonEvent)
 
@@ -835,7 +996,7 @@ async function getButtonEvents({
 
   if (parseRes.error) {
     logger.warn(
-      `getButtonEvents(): data returned from DuckDB wasn't valid, error msg: ${parseRes.error}`,
+      `getButtonEvents(): data returned from database wasn't valid, error msg: ${parseRes.error}`,
     )
     return null
   }
@@ -865,52 +1026,67 @@ after any button event is received.
 */
 
 async function main() {
-  await initDuckTables(duck)
-  await initButtonEventTables()
+  const influxdb = await getInfluxDb()
 
-  const k = await getDevicePowerReadings(influxdb, duck)
+  // await initDuckTables(duck)
+  await initSqliteTables(db)
+  await initButtonEventTables(edb)
+
+  const k = await getDevicePowerReadings(influxdb, db)
   logger.info(`main(): getDevicePowerReadings(): ${JSON.stringify(k)}`)
 
-  const l = await getIlluminanceReadings(influxdb, duck)
+  const l = await getIlluminanceReadings(influxdb, db)
   logger.info(`main(): getIlluminanceReadings(): ${JSON.stringify(l)}`)
 
-  const duckDevicePower = await duck.all(
-    `SELECT * FROM device_power ORDER BY mtime DESC limit 10`,
-  )
+  const devicePower = db
+    .prepare(`SELECT * FROM device_power ORDER BY mtime DESC limit 10`)
+    .all()
 
-  logger.info(`main(): duckDevicePower: ${JSON.stringify(duckDevicePower[0])}`)
+  logger.info(`main(): devicePower: ${JSON.stringify(devicePower[0])}`)
 
-  const numIlluminanceReadingsInDb = await duck.all(
-    `SELECT COUNT(*) AS illuminance_count FROM illuminance;`,
-  )
+  const numIlluminanceReadingsInDb = db
+    .prepare(`SELECT COUNT(*) AS illuminance_count FROM illuminance;`)
+    .all() as any[]
   logger.info(
-    `main(): number of illuminance measurements in DuckDB: ${numIlluminanceReadingsInDb[0].illuminance_count!}`,
+    `main(): number of illuminance measurements in database: ${numIlluminanceReadingsInDb[0].illuminance_count!}`,
   )
 
-  await mqttClient.subscribeAsync(process.env.MQTT_TOPIC_DEVICE_POWER_STATUS!) // power device
-  await mqttClient.subscribeAsync(
-    process.env.MQTT_TOPIC_ILLUMINANCE_SENSOR_STATUS!,
-  ) // illuminance sensor
+  const mqttClient = await mqtt.connectAsync(process.env.MQTT_SERVER_URI!, {
+    username: process.env.MQTT_USERNAME!,
+    password: process.env.MQTT_PASSWORD!,
+    reconnectPeriod: 1000,
+    reconnectOnConnackError: true,
+  })
+
+  const powerTopic = process.env.USE_FAKE_SENSORS
+    ? process.env.MQTT_TOPIC_DEVICE_POWER_STATUS_FAKE!
+    : process.env.MQTT_TOPIC_DEVICE_POWER_STATUS!
+  logger.info(`main(): mqttClient: subscribe to ${powerTopic}`)
+  await mqttClient.subscribeAsync(powerTopic) // power device
+
+  const illumTopic = process.env.USE_FAKE_SENSORS
+    ? process.env.MQTT_TOPIC_ILLUMINANCE_SENSOR_STATUS_FAKE!
+    : process.env.MQTT_TOPIC_ILLUMINANCE_SENSOR_STATUS!
+  logger.info(`main(): mqttClient: subscribe to ${illumTopic}`)
+  await mqttClient.subscribeAsync(illumTopic) // illuminance sensor
 
   // bedside button/alarm module input events, either "awake" or "in_bed"
   await mqttClient.subscribeAsync(process.env.MQTT_TOPIC_BUTTONS_EVENT!)
   mqttClient.on('message', async (topic, payload) => {
-    if (topic === process.env.MQTT_TOPIC_DEVICE_POWER_STATUS!) {
+    if (topic === powerTopic) {
       const str = payload.toString()
       logger.debug(`MQTT receive: device power: ${str}`)
-      await insertDevicePowerReading(str)
-    } else if (topic === process.env.MQTT_TOPIC_ILLUMINANCE_SENSOR_STATUS!) {
+      await insertDevicePowerReading(db, str)
+    } else if (topic === illumTopic) {
       const str = payload.toString()
       logger.debug(`MQTT receive: env sensors: ${str}`)
-      await insertIlluminanceSensorsReading(str)
+      await insertIlluminanceSensorsReading(db, str)
     } else if (topic === process.env.MQTT_TOPIC_BUTTONS_EVENT!) {
       const str = payload.toString()
       logger.info(`MQTT receive: button event: ${str}`)
-      await insertButtonEvent(str)
+      await insertButtonEvent(db, edb, mqttClient, str)
     }
   })
-
-  // await playToneOnDevice(8) // play Reveille on button/alarm device at start-up
 
   setInterval(async () => {
     // const res = await isItDarkRightNow()
@@ -928,12 +1104,12 @@ async function main() {
     // const dres = await hasDeviceBeenOff()
     // logger.info(`interval: hasPowerDeviceBeenOff(): ${JSON.stringify(dres)}`)
 
-    const alarmRes = await shouldAlarmBePlayed()
+    const alarmRes = await shouldAlarmBePlayed(db, edb)
+    logger.debug(
+      `alarm check interval: shouldAlarmBePlayed(): ${JSON.stringify(alarmRes)}`,
+    )
     if (alarmRes) {
-      logger.info(`interval: shouldAlarmBePlayed(): ${alarmRes}`)
-      await playToneOnDevice(7)
-    } else {
-      logger.debug(`interval: shouldAlarmBePlayed(): ${alarmRes}`)
+      await playToneOnDevice(mqttClient, 7)
     }
   }, 13000) // 13 seconds because the Reveille (tune #8) takes about 12 seconds to play
 
@@ -941,7 +1117,7 @@ async function main() {
     async fetch(req) {
       const url = new URL(req.url)
       if (url.pathname === '/api/v1/button-events') {
-        const beRes = await getButtonEvents()
+        const beRes = await getButtonEvents(edb)
         const r = new Response(JSON.stringify(beRes))
         r.headers.set('Content-Type', 'application/json; charset=utf-8')
         return r
