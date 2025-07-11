@@ -1114,7 +1114,8 @@ async function main() {
   }, 13000) // 13 seconds because the Reveille (tune #8) takes about 12 seconds to play
 
   const webServer = Bun.serve({
-    async fetch(req) {
+    port: process.env.BUN_PORT ? Number.parseInt(process.env.BUN_PORT) : 3002,
+    fetch: async (req) => {
       const url = new URL(req.url)
       if (url.pathname === '/api/v1/button-events') {
         const beRes = await getButtonEvents(edb)
