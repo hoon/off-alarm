@@ -1,12 +1,24 @@
-# off-alarm
-
-## Work in progress
+# off-alarm (work in progress)
 
 ## Purpose
 
-`off-alarm` intends to monitor if a critical device has been inadverdently turned off and alert user using audible alarm. It monitors messages from Tasmota nodes sending connected device power usage, light sensor readings, and a custom bedside device that sends messages when a button is pressed and is able to play a tune on a piezo buzzer. These messages are sent over MQTT. `off-alarm` also queries InfluxDB that stores the previous light sensor and device power readings to determine whether an audible alarm should be played. Querying InfluxDB is only done when `off-alarm` first starts.
+`off-alarm` intends to monitor if a critical device has been inadverdently turned off and alert user using audible alarm. It monitors measurements from Tasmota nodes sending connected device power usage, light sensor readings, and a custom device that sends messages when a button is pressed and is able to play a tune on a piezo buzzer. These messages are sent over MQTT. `off-alarm` also queries InfluxDB that stores the previous light sensor and device power readings to determine whether an audible alarm should be played. Querying InfluxDB is only done when `off-alarm` first starts.
 
-## Install
+This project is for a very specific use case and a very specific hardware setup, and you may not find it useful as is, but there may be some useful snippets in the code if you are interested in building something similar.
+
+## Components
+
+Server (ts running on bun): `./src`
+
+Web frontend (statically served by server): `./frontend`
+
+Device (ESP-IDF C code for ESP32): `./device-esp32`
+
+## ESP32 Device
+
+For more information on the device, see [device-esp32/README.md](device-esp32/README.md).
+
+## Install (server)
 
 To install dependencies:
 
