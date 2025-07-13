@@ -26,6 +26,8 @@ To install dependencies:
 bun install
 ```
 
+Configure environment variables in `.env` file. Use `.env.template` as a template.
+
 To run:
 
 ```bash
