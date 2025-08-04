@@ -204,7 +204,13 @@ static tune_t tunes[] = {
         },
         .length = 36,
         .bpm = DEFAULT_BPM
-    }
+    },
+    // Tune 8: Failure tone #1
+    { 
+        .notes = {{NOTE_GS, 5, 8}, {NOTE_GS, 5, 8}, {NOTE_GS, 5, 8}, {NOTE_GS, 5, 2}},
+        .length = 4,
+        .bpm = DEFAULT_BPM
+    }, 
 };
 
 // Function prototypes
@@ -369,7 +375,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         case MQTT_EVENT_CONNECTED:
             ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
             // Subscribe to command topic
-            esp_mqtt_client_subscribe(mqtt_client, COMMAND_TOPIC, 0);
+            esp_mqtt_client_subscribe_single(mqtt_client, COMMAND_TOPIC, 0);
             break;
             
         case MQTT_EVENT_DISCONNECTED:
@@ -422,10 +428,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                             }
                         }
                     }
-                    
-                    // Free the allocated memory
-                    free(mqtt_data);
                 }
+                // Free the allocated memory
+                free(mqtt_data);
             }
             break;
             
@@ -658,16 +663,40 @@ static void button_task(void *arg)
             ESP_LOGI(TAG, "Button %d pressed", button_id);
             
             // Publish message to MQTT broker
+            int ret = -1;
             if (mqtt_client) {
-                esp_mqtt_client_publish(mqtt_client, EVENT_TOPIC, buttons[button_id - 1].mqtt_msg, 0, 1, 0);
-                ESP_LOGI(TAG, "Published message: %s", buttons[button_id - 1].mqtt_msg);
+                ret = esp_mqtt_client_enqueue(
+                    mqtt_client,
+                    EVENT_TOPIC,
+                    buttons[button_id - 1].mqtt_msg,
+                    0,
+                    1,
+                    0,
+                    pdFALSE
+                );
+                if (ret > -1) {
+                    ESP_LOGI(
+                        TAG,
+                        "Enqueued MQTT message to be published: \"%s\", msg_id: %d",
+                        buttons[button_id - 1].mqtt_msg,
+                        ret
+                    );
+                } else {
+                    ESP_LOGE(
+                        TAG,
+                        "Failed to enqueue MQTT message: \"%s\", status: %d",
+                        buttons[button_id - 1].mqtt_msg,
+                        ret
+                    );
+                }
             }
 
-            const int tune_id = (int)buttons[button_id - 1].tune_id;
+            // Failure tone if MQTT publish enqueue fails
+            const int tune_id = ret > -1 ? (int)buttons[button_id - 1].tune_id : 8;
             if (xQueueSend(tune_queue, &tune_id, 0) == pdTRUE) {
                 ESP_LOGI(TAG, "Button %d, tune %d added to queue", button_id, tune_id);
             } else {
-                ESP_LOGI(TAG, "Button %d, tune %d not added to queue", button_id, tune_id);
+                ESP_LOGI(TAG, "Button %d, tune %d couldn't be added to queue", button_id, tune_id);
             }
         }
     }
