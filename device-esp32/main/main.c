@@ -207,8 +207,14 @@ static tune_t tunes[] = {
     },
     // Tune 8: Failure tone #1
     { 
-        .notes = {{NOTE_GS, 5, 8}, {NOTE_GS, 5, 8}, {NOTE_GS, 5, 8}, {NOTE_GS, 5, 2}},
-        .length = 4,
+        .notes = {
+            {NOTE_GS, 5, 8},
+            {NOTE_REST, 0, 32},
+            {NOTE_GS, 5, 8},
+            {NOTE_REST, 0, 32},
+            {NOTE_GS, 5, 8},
+        },
+        .length = 5,
         .bpm = DEFAULT_BPM
     }, 
 };
@@ -689,6 +695,8 @@ static void button_task(void *arg)
                         ret
                     );
                 }
+            } else {
+                ESP_LOGI(TAG, "Button pressed but MQTT client not initialized");
             }
 
             // Failure tone if MQTT publish enqueue fails
