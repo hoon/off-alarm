@@ -662,12 +662,18 @@ static void play_tune(int tune_id)
 static void button_task(void *arg)
 {
     uint8_t button_id;
-    // char msg[32];
     
     for (;;) {
         if (xQueueReceive(button_evt_queue, &button_id, portMAX_DELAY)) {
             ESP_LOGI(TAG, "Button %d pressed", button_id);
             
+            const int tune_id = buttons[button_id - 1].tune_id;
+            if (xQueueSend(tune_queue, &tune_id, 0) == pdTRUE) {
+                ESP_LOGI(TAG, "Button %d, tune %d added to queue", button_id, tune_id);
+            } else {
+                ESP_LOGI(TAG, "Button %d, tune %d couldn't be added to queue", button_id, tune_id);
+            }
+
             // Publish message to MQTT broker
             int ret = -1;
             if (mqtt_client) {
@@ -700,11 +706,23 @@ static void button_task(void *arg)
             }
 
             // Failure tone if MQTT publish enqueue fails
-            const int tune_id = ret > -1 ? (int)buttons[button_id - 1].tune_id : 8;
-            if (xQueueSend(tune_queue, &tune_id, 0) == pdTRUE) {
-                ESP_LOGI(TAG, "Button %d, tune %d added to queue", button_id, tune_id);
-            } else {
-                ESP_LOGI(TAG, "Button %d, tune %d couldn't be added to queue", button_id, tune_id);
+            if (ret < 0) {
+                const int failure_tune_id = 8;
+                if (xQueueSend(tune_queue, &failure_tune_id, 0) == pdTRUE) {
+                    ESP_LOGI(
+                        TAG,
+                        "Button %d, MQTT enqueue failure, tune %d added to queue",
+                        button_id,
+                        failure_tune_id
+                    );
+                } else {
+                    ESP_LOGI(
+                        TAG,
+                        "Button %d, MQTT enqueue failure, tune %d couldn't be added to queue",
+                        button_id,
+                        failure_tune_id
+                    );
+                }
             }
         }
     }
@@ -737,7 +755,7 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
     
-    ESP_LOGI(TAG, "ESP32 MQTT Button and Buzzer Example");
+    ESP_LOGI(TAG, "off-alarm device");
     
     // Initialize components
     wifi_init();
