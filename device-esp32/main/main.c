@@ -217,6 +217,80 @@ static tune_t tunes[] = {
         .length = 5,
         .bpm = DEFAULT_BPM
     }, 
+    // Tune 9: Bad sleep position
+    {
+        .notes = {
+            {NOTE_DS, 5, DURATION_EIGHTH},  // D#
+            {NOTE_FS, 5, DURATION_EIGHTH},  // F#
+            {NOTE_AS, 5, DURATION_EIGHTH},  // A#
+            {NOTE_DS, 6, DURATION_EIGHTH},
+
+            {NOTE_AS, 5, DURATION_EIGHTH},
+            {NOTE_FS, 5, DURATION_EIGHTH},
+            {NOTE_DS, 5, DURATION_EIGHTH},
+            {NOTE_REST, 0, DURATION_EIGHTH},
+
+            {NOTE_F, 5, DURATION_EIGHTH},   // borrowed for tension (harmonic minor feel)
+            {NOTE_GS, 5, DURATION_EIGHTH},  // G#
+            {NOTE_C, 6, DURATION_EIGHTH},   // C natural adds bite
+            {NOTE_F, 6, DURATION_EIGHTH},
+
+            {NOTE_C, 6, DURATION_EIGHTH},
+            {NOTE_GS, 5, DURATION_EIGHTH},
+            {NOTE_F, 5, DURATION_EIGHTH},
+            {NOTE_REST, 0, DURATION_EIGHTH},
+
+            {NOTE_GS, 5, DURATION_EIGHTH},
+            {NOTE_C, 6, DURATION_EIGHTH},
+            {NOTE_DS, 6, DURATION_EIGHTH},
+            {NOTE_GS, 6, DURATION_QUARTER},
+
+            {NOTE_REST, 0, DURATION_EIGHTH},
+            {NOTE_GS, 6, DURATION_EIGHTH},
+            {NOTE_GS, 6, DURATION_QUARTER}
+        },
+        .length = 23,
+        .bpm = DEFAULT_BPM + 20
+    },
+
+    // Tune 10: Bad sleep position (short)
+    {
+        .notes = {
+            {NOTE_A, 7, DURATION_EIGHTH},
+            {NOTE_REST, 0, 64},
+            {NOTE_E, 6, DURATION_SIXTEENTH},
+            {NOTE_REST, 0, 64},
+            {NOTE_E, 6, DURATION_SIXTEENTH},
+            {NOTE_REST, 0, 64},
+            {NOTE_E, 6, DURATION_EIGHTH},
+            {NOTE_REST, 0, 64},
+            {NOTE_E, 6, DURATION_EIGHTH},
+
+            {NOTE_A, 7, DURATION_EIGHTH},
+            {NOTE_REST, 0, 64},
+            {NOTE_E, 6, DURATION_SIXTEENTH},
+            {NOTE_REST, 0, 64},
+            {NOTE_E, 6, DURATION_SIXTEENTH},
+            {NOTE_REST, 0, 64},
+            {NOTE_E, 6, DURATION_EIGHTH},
+            {NOTE_REST, 0, 64},
+            {NOTE_E, 6, DURATION_EIGHTH},
+            {NOTE_REST, 0, 64},
+
+            {NOTE_E, 6, DURATION_EIGHTH},
+            {NOTE_REST, 0, 64},
+            {NOTE_D, 6, DURATION_EIGHTH},
+            {NOTE_REST, 0, 64},
+            {NOTE_C, 6, DURATION_EIGHTH},
+            {NOTE_REST, 0, 64},
+            {NOTE_B, 6, DURATION_EIGHTH},
+            {NOTE_REST, 0, 64},
+            {NOTE_A, 6, DURATION_QUARTER},
+            {NOTE_REST, 0, DURATION_QUARTER},
+        },
+        .length = 29,
+        .bpm = DEFAULT_BPM
+    }
 };
 
 // Function prototypes
