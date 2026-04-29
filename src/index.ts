@@ -103,7 +103,7 @@ export async function getDevicePowerReadings(
 
         const stmt = _db.prepare(
           `INSERT INTO device_power (mtime, power_watt) ` +
-            `VALUES ($mtime, $powerWatt);`,
+          `VALUES ($mtime, $powerWatt);`,
         )
 
         try {
@@ -169,7 +169,7 @@ export async function getIlluminanceReadings(
 
         const stmt = _db.prepare(
           `INSERT INTO illuminance (mtime, illuminance_lux, temp_c) ` +
-            `VALUES ($mtime, $illuminanceLux, $tempC);`,
+          `VALUES ($mtime, $illuminanceLux, $tempC);`,
         )
 
         try {
@@ -562,14 +562,14 @@ async function insertDevicePowerReading(
   if (k.error) {
     logger.warn(
       `insertDevicePowerReading(): failed to parse the power reading string ${devicePowerReadingStr}; ` +
-        `error message: ${k.error}`,
+      `error message: ${k.error}`,
     )
     return
   }
 
   const stmt = _db.prepare(
     `INSERT INTO device_power (mtime, power_watt) ` +
-      `VALUES ($mtime, $powerWatt);`,
+    `VALUES ($mtime, $powerWatt);`,
   )
 
   const toInsert = {
@@ -620,7 +620,7 @@ async function insertIlluminanceSensorsReading(
   if (k.error) {
     logger.warn(
       `insertIlluminanceSensorsReading(): Env sensors reading string parse failed: ${envSensorsReadingStr}; ` +
-        `error msg: ${k.error}`,
+      `error msg: ${k.error}`,
     )
     return
   }
@@ -628,7 +628,7 @@ async function insertIlluminanceSensorsReading(
   // we only care about the illuminance from the sensor readings
   const stmt = _db.prepare(
     `INSERT INTO illuminance (mtime, illuminance_lux, temp_c) ` +
-      `VALUES ($mtime, $illuminanceLux, $tempC);`,
+    `VALUES ($mtime, $illuminanceLux, $tempC);`,
   )
 
   try {
@@ -681,7 +681,7 @@ async function insertButtonEvent(
   const evStr = buttonEventStr.trim()
   const stmt = _edb.prepare(
     `INSERT INTO button_event (etime, event_type, temp_c, illuminance_lux) ` +
-      `VALUES ($etime, $eventType, $tempC, $illuminanceLux);`,
+    `VALUES ($etime, $eventType, $tempC, $illuminanceLux);`,
   )
 
   const buttonEventResponse = [
@@ -696,8 +696,8 @@ async function insertButtonEvent(
   if (evtResponse) {
     const res = _db.prepare(
       'SELECT mtime, illuminance_lux, temp_c FROM illuminance ' +
-        'ORDER BY mtime DESC ' +
-        'LIMIT 1;',
+      'ORDER BY mtime DESC ' +
+      'LIMIT 1;',
     )
     const rows = res.all()
     let illuminanceLux: number | null = null
@@ -760,6 +760,77 @@ async function insertButtonEvent(
   }
 }
 
+async function initSleepPositionTables(_db: Database) {
+  const ccpr = await _db.run(
+    `CREATE TABLE IF NOT EXISTS sleep_position
+      (
+        stime INTEGER,
+        prediction TEXT,
+        confidence REAL,
+        PRIMARY KEY (stime)
+      );`,
+  )
+  logger.info(
+    `initSleepPositionTables(): CREATE sleep_position table: ${JSON.stringify(ccpr)}`,
+  )
+
+  const cidx = await _db.run(
+    `CREATE INDEX IF NOT EXISTS sp_stime_idx ON sleep_position(stime);`,
+  )
+  logger.info(
+    `initSleepPositionTables(): CREATE INDEX on sleep_position table: ${JSON.stringify(cidx)}`,
+  )
+}
+
+async function insertSleepPosition(
+  _db: Database,
+  sleepPositionStr: string,
+) {
+  // expect sleepPositionStr in form of:
+  // {"prediction": "Back", "confidence": 0.9342930316925049, "timestamp": 1776828735}
+  const sleepPositionResponseSchema = z.object({
+    prediction: z.string(),
+    confidence: z.number(),
+    timestamp: z.number(),
+  })
+
+  const parsedSleepPosition = await sleepPositionResponseSchema.safeParseAsync(JSON.parse(sleepPositionStr))
+  if (parsedSleepPosition.error) {
+    logger.warn(
+      `insertSleepPosition(): sleep_position string parse failed: ${sleepPositionStr}; ` +
+      `error msg: ${parsedSleepPosition.error}`,
+    )
+    return
+  }
+
+  const { prediction, confidence, timestamp } = parsedSleepPosition.data
+
+  const stmt = _db.prepare(
+    `INSERT INTO sleep_position (stime, prediction, confidence) ` +
+    `VALUES ($stime, $prediction, $confidence);`,
+  )
+
+  try {
+    logger.debug(
+      `insertSleepPosition(): inserting sleep_position: ${JSON.stringify({
+        stime: timestamp,
+        prediction: prediction,
+        confidence: confidence,
+      })}`,
+    )
+    stmt.run({
+      $stime: timestamp,
+      $prediction: prediction,
+      $confidence: confidence,
+    })
+  } catch (err) {
+    logger.warn(
+      `insertSleepPosition(): database sleep_position insert error: ${err}`,
+    )
+  }
+}
+
+
 async function getLatestIlluminanceReading(_db: Database) {
   const res = await _db.prepare(
     `SELECT mtime, illuminance_lux FROM illuminance ORDER BY mtime DESC LIMIT 1;`,
@@ -775,7 +846,7 @@ async function getLatestIlluminanceReading(_db: Database) {
   if (parseRes.error) {
     logger.error(
       'isItDarkRightNow(): illuminance reading parsing failed: ' +
-        parseRes.error,
+      parseRes.error,
     )
     return null
   }
@@ -1031,6 +1102,7 @@ async function main() {
   // await initDuckTables(duck)
   await initSqliteTables(db)
   await initButtonEventTables(edb)
+  await initSleepPositionTables(db)
 
   const k = await getDevicePowerReadings(influxdb, db)
   logger.info(`main(): getDevicePowerReadings(): ${JSON.stringify(k)}`)
@@ -1070,6 +1142,12 @@ async function main() {
   logger.info(`main(): mqttClient: subscribe to ${illumTopic}`)
   await mqttClient.subscribeAsync(illumTopic) // illuminance sensor
 
+  const sleepPositionTopic = process.env.USE_FAKE_SENSORS
+    ? process.env.MQTT_TOPIC_SLEEP_POSITION_FAKE!
+    : process.env.MQTT_TOPIC_SLEEP_POSITION!
+  logger.info(`main(): mqttClient: subscribe to ${sleepPositionTopic}`)
+  await mqttClient.subscribeAsync(sleepPositionTopic) // sleep position
+
   // bedside button/alarm module input events, either "awake" or "in_bed"
   await mqttClient.subscribeAsync(process.env.MQTT_TOPIC_BUTTONS_EVENT!)
   mqttClient.on('message', async (topic, payload) => {
@@ -1085,6 +1163,11 @@ async function main() {
       const str = payload.toString()
       logger.info(`MQTT receive: button event: ${str}`)
       await insertButtonEvent(db, edb, mqttClient, str)
+    } else if (topic === process.env.MQTT_TOPIC_SLEEP_POSITION!) {
+      // {"prediction": "Back", "confidence": 0.9342930316925049, "timestamp": 1776828735}
+      const str = payload.toString()
+      logger.info(`MQTT receive: sleep position: ${str}`)
+      await insertSleepPosition(db, str)
     }
   })
 
