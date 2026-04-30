@@ -103,7 +103,7 @@ export async function getDevicePowerReadings(
 
         const stmt = _db.prepare(
           `INSERT INTO device_power (mtime, power_watt) ` +
-          `VALUES ($mtime, $powerWatt);`,
+            `VALUES ($mtime, $powerWatt);`,
         )
 
         try {
@@ -169,7 +169,7 @@ export async function getIlluminanceReadings(
 
         const stmt = _db.prepare(
           `INSERT INTO illuminance (mtime, illuminance_lux, temp_c) ` +
-          `VALUES ($mtime, $illuminanceLux, $tempC);`,
+            `VALUES ($mtime, $illuminanceLux, $tempC);`,
         )
 
         try {
@@ -562,14 +562,14 @@ async function insertDevicePowerReading(
   if (k.error) {
     logger.warn(
       `insertDevicePowerReading(): failed to parse the power reading string ${devicePowerReadingStr}; ` +
-      `error message: ${k.error}`,
+        `error message: ${k.error}`,
     )
     return
   }
 
   const stmt = _db.prepare(
     `INSERT INTO device_power (mtime, power_watt) ` +
-    `VALUES ($mtime, $powerWatt);`,
+      `VALUES ($mtime, $powerWatt);`,
   )
 
   const toInsert = {
@@ -620,7 +620,7 @@ async function insertIlluminanceSensorsReading(
   if (k.error) {
     logger.warn(
       `insertIlluminanceSensorsReading(): Env sensors reading string parse failed: ${envSensorsReadingStr}; ` +
-      `error msg: ${k.error}`,
+        `error msg: ${k.error}`,
     )
     return
   }
@@ -628,7 +628,7 @@ async function insertIlluminanceSensorsReading(
   // we only care about the illuminance from the sensor readings
   const stmt = _db.prepare(
     `INSERT INTO illuminance (mtime, illuminance_lux, temp_c) ` +
-    `VALUES ($mtime, $illuminanceLux, $tempC);`,
+      `VALUES ($mtime, $illuminanceLux, $tempC);`,
   )
 
   try {
@@ -681,7 +681,7 @@ async function insertButtonEvent(
   const evStr = buttonEventStr.trim()
   const stmt = _edb.prepare(
     `INSERT INTO button_event (etime, event_type, temp_c, illuminance_lux) ` +
-    `VALUES ($etime, $eventType, $tempC, $illuminanceLux);`,
+      `VALUES ($etime, $eventType, $tempC, $illuminanceLux);`,
   )
 
   const buttonEventResponse = [
@@ -696,8 +696,8 @@ async function insertButtonEvent(
   if (evtResponse) {
     const res = _db.prepare(
       'SELECT mtime, illuminance_lux, temp_c FROM illuminance ' +
-      'ORDER BY mtime DESC ' +
-      'LIMIT 1;',
+        'ORDER BY mtime DESC ' +
+        'LIMIT 1;',
     )
     const rows = res.all()
     let illuminanceLux: number | null = null
@@ -782,10 +782,7 @@ async function initSleepPositionTables(_db: Database) {
   )
 }
 
-async function insertSleepPosition(
-  _db: Database,
-  sleepPositionStr: string,
-) {
+async function insertSleepPosition(_db: Database, sleepPositionStr: string) {
   // expect sleepPositionStr in form of:
   // {"prediction": "Back", "confidence": 0.9342930316925049, "timestamp": 1776828735}
   const sleepPositionResponseSchema = z.object({
@@ -794,11 +791,13 @@ async function insertSleepPosition(
     timestamp: z.number(),
   })
 
-  const parsedSleepPosition = await sleepPositionResponseSchema.safeParseAsync(JSON.parse(sleepPositionStr))
+  const parsedSleepPosition = await sleepPositionResponseSchema.safeParseAsync(
+    JSON.parse(sleepPositionStr),
+  )
   if (parsedSleepPosition.error) {
     logger.warn(
       `insertSleepPosition(): sleep_position string parse failed: ${sleepPositionStr}; ` +
-      `error msg: ${parsedSleepPosition.error}`,
+        `error msg: ${parsedSleepPosition.error}`,
     )
     return
   }
@@ -807,7 +806,7 @@ async function insertSleepPosition(
 
   const stmt = _db.prepare(
     `INSERT INTO sleep_position (stime, prediction, confidence) ` +
-    `VALUES ($stime, $prediction, $confidence);`,
+      `VALUES ($stime, $prediction, $confidence);`,
   )
 
   try {
@@ -830,7 +829,6 @@ async function insertSleepPosition(
   }
 }
 
-
 async function getLatestIlluminanceReading(_db: Database) {
   const res = await _db.prepare(
     `SELECT mtime, illuminance_lux FROM illuminance ORDER BY mtime DESC LIMIT 1;`,
@@ -846,7 +844,7 @@ async function getLatestIlluminanceReading(_db: Database) {
   if (parseRes.error) {
     logger.error(
       'isItDarkRightNow(): illuminance reading parsing failed: ' +
-      parseRes.error,
+        parseRes.error,
     )
     return null
   }
@@ -890,6 +888,51 @@ async function getLatestButtonEvent(
     'getLatestButtonEvent(): button_event parsing failed: ' + parseRes.error,
   )
   return null
+}
+
+async function getSleepPositionHistory(
+  _db: Database,
+  startTimestampMinutes: number,
+  endTimestampMinutes: number,
+) {
+  const sql =
+    `SELECT * FROM sleep_position ` +
+    `WHERE stime >= $startTimestamp AND stime <= $endTimestamp ` +
+    `ORDER BY stime ASC`
+  const stmt = _db.prepare(sql)
+  const res = stmt.all({
+    $startTimestamp: startTimestampMinutes,
+    $endTimestamp: endTimestampMinutes,
+  })
+  return res as {
+    stime: number
+    prediction: string
+    confidence: number
+  }[]
+}
+
+// { now }: Unix timpestamp in milliseconds
+async function isUserInUndesirableSleepPosition(
+  _db: Database,
+  { now: _now = -1 }: { now?: number } = {},
+) {
+  // nowMin - unix timestampin minutes
+  const nowMin = _now === -1 ? Math.floor(Date.now() / 1000) : _now / 1000
+  // retrieve the last 10 minutes of sleep position data
+  const k = await getSleepPositionHistory(_db, nowMin - 10 * 60, _now)
+
+  // do not make decision based on data more stale than 60 seconds
+  if (Math.abs(nowMin - k[k.length - 1].stime) > 60) {
+    return false
+  }
+
+  // if any of the readings in the past 10 minutes is not 'Back'
+  // don't play alarm
+  if (k.some((x) => x.prediction !== 'Back')) {
+    return false
+  }
+
+  return true
 }
 
 async function shouldAlarmBePlayed(
