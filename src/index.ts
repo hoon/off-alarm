@@ -295,6 +295,13 @@ async function hasDeviceBeenOff(_db: Database, forSec: number = 300) {
   return null
 }
 
+interface DevicePowerStats {
+  powerWattAvg: number
+  powerWattMax: number
+  powerWattMin: number
+  numReadings: number
+  powerWattVarPop: number
+}
 export async function getDevicePowerStats(
   _db: Database,
   {
@@ -320,14 +327,6 @@ export async function getDevicePowerStats(
       power_watt_avg, power_watt_max, power_watt_min, num_readings
       FROM agg_m;`,
   )
-
-  interface DevicePowerStats {
-    powerWattAvg: number
-    powerWattMax: number
-    powerWattMin: number
-    numReadings: number
-    powerWattVarPop: number
-  }
 
   const stats: Partial<DevicePowerStats> = {
     powerWattAvg: undefined,
@@ -935,11 +934,19 @@ async function isUserInUndesirableSleepPosition(
   return true
 }
 
-async function shouldAlarmBePlayed(
+export interface DecisionData extends DevicePowerStats {
+  lastButtonType: number | undefined
+  lastButtonTime: number | undefined
+  darkRatio: number | undefined
+  offRatio: number | undefined
+  lmWatt: number | undefined
+}
+
+async function getDecisionData(
   _db: Database,
   _edb: Database,
   { now: _now = -1 }: { now?: number } = {},
-) {
+): Promise<DecisionData> {
   // check if the latest button event is in_bed (=10)
   // check if the latest button event is from less than 14 hours ago
   // check if it's been consistently dark for the last X minutes
@@ -952,7 +959,7 @@ async function shouldAlarmBePlayed(
   const sinceUnixTimestamp = now - 14 * 60 * 60 * 1000
 
   logger.info(
-    `shouldAlarmBePlayed(): now = ${now}, sinceUnixTimestamp = ${sinceUnixTimestamp}`,
+    `getDecisionData(): now = ${now}, sinceUnixTimestamp = ${sinceUnixTimestamp}`,
   )
 
   const latestButtonEvent = await getLatestButtonEvent(_edb, {
@@ -963,19 +970,41 @@ async function shouldAlarmBePlayed(
   const devicePowerStats = await getDevicePowerStats(_db)
 
   const decisionData = {
-    lastButton: latestButtonEvent?.event_type,
-    darkRatio: darkInfo?.darkRatio,
+    lastButtonType: latestButtonEvent?.event_type,
+    lastButtonTime: latestButtonEvent?.etime,
+    darkRatio: darkInfo?.darkRatio || undefined,
     offRatio: devicePowerInfo?.offRatio,
     lmWatt: devicePowerInfo?.lastMeasuredPowerWatt,
     ...devicePowerStats,
   }
-  logger.debug(
-    `shouldAlarmBePlayed(): decisionData: ${JSON.stringify(decisionData)}`,
-  )
+  logger.debug(`getDecisionData(): result: ${JSON.stringify(decisionData)}`)
+  return decisionData as DecisionData
+}
+
+async function shouldAlarmBePlayed(
+  _db: Database,
+  _edb: Database,
+  {
+    decisionData = undefined,
+    now: _now = -1,
+  }: { decisionData?: DecisionData; now?: number } = {},
+) {
+  // check if the latest button event is in_bed (=10)
+  // check if the latest button event is from less than 14 hours ago
+  // check if it's been consistently dark for the last X minutes
+  // -- accept the hasItBeenDark() default for how long of the past period to sample
+  // -- at least 95% of the illuminance sample should be below the dark threshhold
+  // check if the power-monitored device is off and has been off for at least a few minutes
+  // return true if all of the above are true
+
+  const now = _now === -1 ? Date.now() : _now
+
+  const _decisionData =
+    decisionData || (await getDecisionData(_db, _edb, { now }))
 
   if (
-    latestButtonEvent?.event_type !== ButtonEventType.InBed &&
-    latestButtonEvent?.event_type !== ButtonEventType.Awake
+    _decisionData.lastButtonType !== ButtonEventType.InBed &&
+    _decisionData.lastButtonType !== ButtonEventType.Awake
   ) {
     logger.debug(
       `shouldAlarmBePlayed(): latest button press type is neither InBed or Awake`,
@@ -986,8 +1015,8 @@ async function shouldAlarmBePlayed(
   // no further button presses after awake was pressed 15 min ago
   // TODO: We may want to do this only in the morning, but will leave as is
   // for now
-  if (latestButtonEvent.event_type === ButtonEventType.Awake) {
-    if (now - latestButtonEvent.etime > 15 * 60 * 1000) {
+  if (_decisionData.lastButtonType === ButtonEventType.Awake) {
+    if (now - _decisionData.lastButtonTime! > 15 * 60 * 1000) {
       return true
     }
     logger.debug(
@@ -997,7 +1026,7 @@ async function shouldAlarmBePlayed(
   }
 
   // in_bed button was pressed less than 3 minutes ago
-  if (now - latestButtonEvent.etime < 3 * 60 * 1000) {
+  if (now - _decisionData.lastButtonTime! < 3 * 60 * 1000) {
     logger.debug(
       `shouldAlarmBePlayed(): latest button press type is InBed, but it was less than 3 minutes ago`,
     )
@@ -1005,9 +1034,10 @@ async function shouldAlarmBePlayed(
   }
 
   if (
-    devicePowerInfo &&
-    (devicePowerInfo.offRatio <= 0.95 ||
-      devicePowerInfo.lastMeasuredPowerWatt >= DEVICE_POWER_ON_THRESHOLD_WATT)
+    _decisionData.offRatio &&
+    _decisionData.lmWatt &&
+    (_decisionData.offRatio <= 0.95 ||
+      _decisionData.lmWatt >= DEVICE_POWER_ON_THRESHOLD_WATT)
   ) {
     logger.debug(
       `shouldAlarmBePlayed(): device power level is not within thresholds`,
@@ -1015,11 +1045,15 @@ async function shouldAlarmBePlayed(
     return false
   }
 
-  if (devicePowerStats) {
+  if (
+    _decisionData.powerWattAvg &&
+    _decisionData.numReadings &&
+    _decisionData.powerWattVarPop
+  ) {
     // power use is definitely above the maximum level seen during stand-by
     // using the average has the effect of delaying the alarm,
     // possibly as long as the sensor reading period (300 seconds by default)
-    if (devicePowerStats.powerWattAvg >= DEVICE_POWER_ON_THRESHOLD_WATT) {
+    if (_decisionData.powerWattAvg >= DEVICE_POWER_ON_THRESHOLD_WATT) {
       logger.debug(
         `shouldAlarmBePlayed(): device power average is above threshold`,
       )
@@ -1027,7 +1061,7 @@ async function shouldAlarmBePlayed(
     }
 
     // power sensor is not reporting any data
-    if (devicePowerStats.numReadings < 1) {
+    if (_decisionData.numReadings < 1) {
       logger.debug(
         `shouldAlarmBePlayed(): device power sensor is not reporting any data`,
       )
@@ -1035,9 +1069,7 @@ async function shouldAlarmBePlayed(
     }
 
     // device is likely in a transitional state between active, standby, sleep
-    if (
-      devicePowerStats.powerWattVarPop > DEVICE_POWER_VARIANCE_POP_THRESHOLD
-    ) {
+    if (_decisionData.powerWattVarPop > DEVICE_POWER_VARIANCE_POP_THRESHOLD) {
       logger.debug(
         `shouldAlarmBePlayed(): device power variance is above threshold`,
       )
@@ -1051,7 +1083,7 @@ async function shouldAlarmBePlayed(
     return false
   }
 
-  if (darkInfo?.darkRatio && darkInfo.darkRatio > 0.95) {
+  if (_decisionData.darkRatio && _decisionData.darkRatio > 0.95) {
     logger.debug(`shouldAlarmBePlayed(): illuminance is below threshold`)
     return true
   }
@@ -1230,7 +1262,8 @@ async function main() {
     // const dres = await hasDeviceBeenOff()
     // logger.info(`interval: hasPowerDeviceBeenOff(): ${JSON.stringify(dres)}`)
 
-    const alarmRes = await shouldAlarmBePlayed(db, edb)
+    const decisionData = await getDecisionData(db, edb)
+    const alarmRes = await shouldAlarmBePlayed(db, edb, { decisionData })
     logger.debug(
       `alarm check interval: shouldAlarmBePlayed(): ${JSON.stringify(alarmRes)}`,
     )
