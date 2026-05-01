@@ -915,13 +915,21 @@ async function isUserInUndesirableSleepPosition(
   _db: Database,
   { now: _now = -1 }: { now?: number } = {},
 ) {
-  // nowMin - unix timestampin minutes
-  const nowMin = _now === -1 ? Math.floor(Date.now() / 1000) : _now / 1000
+  // nowMinutes - unix timestampin minutes
+  const nowMinutes = _now === -1 ? Math.floor(Date.now() / 1000) : _now / 1000
   // retrieve the last 10 minutes of sleep position data
-  const k = await getSleepPositionHistory(_db, nowMin - 10 * 60, _now)
+  const k = await getSleepPositionHistory(_db, nowMinutes - 10 * 60, _now)
+
+  if (!k || k.length === 0) {
+    logger.debug(`isUserInUndesirableSleepPosition(): no sleep position data`)
+    return false
+  }
 
   // do not make decision based on data more stale than 60 seconds
-  if (Math.abs(nowMin - k[k.length - 1].stime) > 60) {
+  if (Math.abs(nowMinutes - k[k.length - 1].stime) > 60) {
+    logger.debug(
+      `isUserInUndesirableSleepPosition(): sleep position data is stale`,
+    )
     return false
   }
 
@@ -1110,6 +1118,44 @@ async function shouldAlarmBePlayed(
   return false
 }
 
+async function shouldSleepPositionAlarmBePlayed(
+  _db: Database,
+  _edb: Database,
+  {
+    decisionData,
+    now = -1,
+  }: { decisionData?: DecisionData; now?: number } = {},
+) {
+  const _now = now === -1 ? Date.now() : now
+
+  const _decisionData =
+    decisionData || (await getDecisionData(_db, _edb, { now: _now }))
+
+  const isInBadSleepPosition = await isUserInUndesirableSleepPosition(_db, {
+    now: _now,
+  })
+
+  // if not "InBed" state, don't play alarm
+  if (_decisionData.lastButtonType !== ButtonEventType.InBed) {
+    return false
+  }
+
+  // if not sufficiently and consistently dark, don't play alarm
+  if (_decisionData.darkRatio && _decisionData.darkRatio < 0.95) {
+    return false
+  }
+
+  // if user is in a bad sleep position, play sleep position alarm
+  if (isInBadSleepPosition) {
+    logger.debug(
+      `shouldSleepPositionAlarmBePlayed(): user is in bad sleep position`,
+    )
+    return true
+  }
+
+  return false
+}
+
 async function getButtonEvents(
   _edb: Database,
   {
@@ -1269,6 +1315,18 @@ async function main() {
     )
     if (alarmRes) {
       await playToneOnDevice(mqttClient, 7)
+    }
+
+    const spAlarmRes = await shouldSleepPositionAlarmBePlayed(db, edb, {
+      decisionData,
+    })
+    logger.debug(
+      `alarm check interval: shouldSleepPositionAlarmBePlayed(): ${JSON.stringify(
+        spAlarmRes,
+      )}`,
+    )
+    if (spAlarmRes) {
+      await playToneOnDevice(mqttClient, 9)
     }
   }, 13000) // 13 seconds because the Reveille (tune #8) takes about 12 seconds to play
 
