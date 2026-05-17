@@ -989,14 +989,13 @@ async function getDecisionData(
   return decisionData as DecisionData
 }
 
-async function shouldAlarmBePlayed(
-  _db: Database,
-  _edb: Database,
-  {
-    decisionData = undefined,
-    now: _now = -1,
-  }: { decisionData?: DecisionData; now?: number } = {},
-) {
+async function shouldAlarmBePlayed({
+  decisionData,
+  now: _now = -1,
+}: {
+  decisionData: DecisionData
+  now?: number
+}) {
   // check if the latest button event is in_bed (=10)
   // check if the latest button event is from less than 14 hours ago
   // check if it's been consistently dark for the last X minutes
@@ -1007,12 +1006,9 @@ async function shouldAlarmBePlayed(
 
   const now = _now === -1 ? Date.now() : _now
 
-  const _decisionData =
-    decisionData || (await getDecisionData(_db, _edb, { now }))
-
   if (
-    _decisionData.lastButtonType !== ButtonEventType.InBed &&
-    _decisionData.lastButtonType !== ButtonEventType.Awake
+    decisionData.lastButtonType !== ButtonEventType.InBed &&
+    decisionData.lastButtonType !== ButtonEventType.Awake
   ) {
     logger.debug(
       `shouldAlarmBePlayed(): latest button press type is neither InBed or Awake`,
@@ -1023,8 +1019,8 @@ async function shouldAlarmBePlayed(
   // no further button presses after awake was pressed 15 min ago
   // TODO: We may want to do this only in the morning, but will leave as is
   // for now
-  if (_decisionData.lastButtonType === ButtonEventType.Awake) {
-    if (now - _decisionData.lastButtonTime! > 15 * 60 * 1000) {
+  if (decisionData.lastButtonType === ButtonEventType.Awake) {
+    if (now - decisionData.lastButtonTime! > 15 * 60 * 1000) {
       return true
     }
     logger.debug(
@@ -1034,7 +1030,7 @@ async function shouldAlarmBePlayed(
   }
 
   // in_bed button was pressed less than 3 minutes ago
-  if (now - _decisionData.lastButtonTime! < 3 * 60 * 1000) {
+  if (now - decisionData.lastButtonTime! < 3 * 60 * 1000) {
     logger.debug(
       `shouldAlarmBePlayed(): latest button press type is InBed, but it was less than 3 minutes ago`,
     )
@@ -1042,10 +1038,10 @@ async function shouldAlarmBePlayed(
   }
 
   if (
-    _decisionData.offRatio &&
-    _decisionData.lmWatt &&
-    (_decisionData.offRatio <= 0.95 ||
-      _decisionData.lmWatt >= DEVICE_POWER_ON_THRESHOLD_WATT)
+    decisionData.offRatio &&
+    decisionData.lmWatt &&
+    (decisionData.offRatio <= 0.95 ||
+      decisionData.lmWatt >= DEVICE_POWER_ON_THRESHOLD_WATT)
   ) {
     logger.debug(
       `shouldAlarmBePlayed(): device power level is not within thresholds`,
@@ -1054,14 +1050,14 @@ async function shouldAlarmBePlayed(
   }
 
   if (
-    _decisionData.powerWattAvg &&
-    _decisionData.numReadings &&
-    _decisionData.powerWattVarPop
+    decisionData.powerWattAvg &&
+    decisionData.numReadings &&
+    decisionData.powerWattVarPop
   ) {
     // power use is definitely above the maximum level seen during stand-by
     // using the average has the effect of delaying the alarm,
     // possibly as long as the sensor reading period (300 seconds by default)
-    if (_decisionData.powerWattAvg >= DEVICE_POWER_ON_THRESHOLD_WATT) {
+    if (decisionData.powerWattAvg >= DEVICE_POWER_ON_THRESHOLD_WATT) {
       logger.debug(
         `shouldAlarmBePlayed(): device power average is above threshold`,
       )
@@ -1069,7 +1065,7 @@ async function shouldAlarmBePlayed(
     }
 
     // power sensor is not reporting any data
-    if (_decisionData.numReadings < 1) {
+    if (decisionData.numReadings < 1) {
       logger.debug(
         `shouldAlarmBePlayed(): device power sensor is not reporting any data`,
       )
@@ -1077,7 +1073,7 @@ async function shouldAlarmBePlayed(
     }
 
     // device is likely in a transitional state between active, standby, sleep
-    if (_decisionData.powerWattVarPop > DEVICE_POWER_VARIANCE_POP_THRESHOLD) {
+    if (decisionData.powerWattVarPop > DEVICE_POWER_VARIANCE_POP_THRESHOLD) {
       logger.debug(
         `shouldAlarmBePlayed(): device power variance is above threshold`,
       )
@@ -1091,7 +1087,7 @@ async function shouldAlarmBePlayed(
     return false
   }
 
-  if (_decisionData.darkRatio && _decisionData.darkRatio > 0.95) {
+  if (decisionData.darkRatio && decisionData.darkRatio > 0.95) {
     logger.debug(`shouldAlarmBePlayed(): illuminance is below threshold`)
     return true
   }
@@ -1118,35 +1114,35 @@ async function shouldAlarmBePlayed(
   return false
 }
 
-async function shouldSleepPositionAlarmBePlayed(
-  _db: Database,
-  _edb: Database,
-  {
-    decisionData,
-    now = -1,
-  }: { decisionData?: DecisionData; now?: number } = {},
-) {
+async function shouldSleepPositionAlarmBePlayed({
+  decisionData,
+  isUserInUndesirableSleepPosition,
+  now = -1,
+}: {
+  decisionData: DecisionData
+  isUserInUndesirableSleepPosition: boolean
+  now?: number
+}) {
   const _now = now === -1 ? Date.now() : now
 
-  const _decisionData =
-    decisionData || (await getDecisionData(_db, _edb, { now: _now }))
-
-  const isInBadSleepPosition = await isUserInUndesirableSleepPosition(_db, {
-    now: _now,
-  })
+  if (!decisionData) {
+    throw new Error(
+      'shouldSleepPositionAlarmBePlayed(): decisionData is undefined',
+    )
+  }
 
   // if not "InBed" state, don't play alarm
-  if (_decisionData.lastButtonType !== ButtonEventType.InBed) {
+  if (decisionData.lastButtonType !== ButtonEventType.InBed) {
     return false
   }
 
   // if not sufficiently and consistently dark, don't play alarm
-  if (_decisionData.darkRatio && _decisionData.darkRatio < 0.95) {
+  if (decisionData.darkRatio && decisionData.darkRatio < 0.95) {
     return false
   }
 
   // if user is in a bad sleep position, play sleep position alarm
-  if (isInBadSleepPosition) {
+  if (isUserInUndesirableSleepPosition) {
     logger.debug(
       `shouldSleepPositionAlarmBePlayed(): user is in bad sleep position`,
     )
@@ -1309,7 +1305,7 @@ async function main() {
     // logger.info(`interval: hasPowerDeviceBeenOff(): ${JSON.stringify(dres)}`)
 
     const decisionData = await getDecisionData(db, edb)
-    const alarmRes = await shouldAlarmBePlayed(db, edb, { decisionData })
+    const alarmRes = await shouldAlarmBePlayed({ decisionData })
     logger.debug(
       `alarm check interval: shouldAlarmBePlayed(): ${JSON.stringify(alarmRes)}`,
     )
@@ -1317,8 +1313,12 @@ async function main() {
       await playToneOnDevice(mqttClient, 7)
     }
 
-    const spAlarmRes = await shouldSleepPositionAlarmBePlayed(db, edb, {
+    const _isUserInUndesirableSleepPosition =
+      await isUserInUndesirableSleepPosition(db)
+
+    const spAlarmRes = await shouldSleepPositionAlarmBePlayed({
       decisionData,
+      isUserInUndesirableSleepPosition: _isUserInUndesirableSleepPosition,
     })
     logger.debug(
       `alarm check interval: shouldSleepPositionAlarmBePlayed(): ${JSON.stringify(
