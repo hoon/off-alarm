@@ -21,11 +21,6 @@ async function getInfluxDb() {
   }
 }
 
-const db = process.env.PERSIST_SENSOR_DATA
-  ? new Database('sensor.sqlite', { create: true })
-  : new Database(':memory:')
-const edb = new Database('button_event.sqlite', { create: true })
-
 const buttonEvent = z.object({
   etime: z.number(), // millisecond unix timestamp
   event_type: z.number(),
@@ -947,7 +942,7 @@ export interface DecisionData extends DevicePowerStats {
   lastButtonTime: number | undefined
   darkRatio: number | undefined
   offRatio: number | undefined
-  lmWatt: number | undefined
+  lastWatt: number | undefined // last measured power use in watts
 }
 
 async function getDecisionData(
@@ -982,7 +977,7 @@ async function getDecisionData(
     lastButtonTime: latestButtonEvent?.etime,
     darkRatio: darkInfo?.darkRatio || undefined,
     offRatio: devicePowerInfo?.offRatio,
-    lmWatt: devicePowerInfo?.lastMeasuredPowerWatt,
+    lastWatt: devicePowerInfo?.lastMeasuredPowerWatt,
     ...devicePowerStats,
   }
   logger.debug(`getDecisionData(): result: ${JSON.stringify(decisionData)}`)
@@ -1039,9 +1034,9 @@ async function shouldAlarmBePlayed({
 
   if (
     decisionData.offRatio &&
-    decisionData.lmWatt &&
+    decisionData.lastWatt &&
     (decisionData.offRatio <= 0.95 ||
-      decisionData.lmWatt >= DEVICE_POWER_ON_THRESHOLD_WATT)
+      decisionData.lastWatt >= DEVICE_POWER_ON_THRESHOLD_WATT)
   ) {
     logger.debug(
       `shouldAlarmBePlayed(): device power level is not within thresholds`,
@@ -1216,6 +1211,11 @@ after any button event is received.
 async function main() {
   const influxdb = await getInfluxDb()
 
+  const db = process.env.PERSIST_SENSOR_DATA
+    ? new Database('sensor.sqlite', { create: true })
+    : new Database(':memory:')
+  const edb = new Database('button_event.sqlite', { create: true })
+
   // await initDuckTables(duck)
   await initSqliteTables(db)
   await initButtonEventTables(edb)
@@ -1372,3 +1372,13 @@ async function main() {
 if (require.main === module) {
   main()
 }
+
+// Export internal functions and types for testing purposes only
+export const _TESTING =
+  process.env.NODE_ENV === 'test'
+    ? {
+        shouldAlarmBePlayed,
+        shouldSleepPositionAlarmBePlayed,
+        ButtonEventType,
+      }
+    : undefined
