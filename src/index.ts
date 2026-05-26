@@ -874,12 +874,19 @@ async function getLatestButtonEvent(
   stmt.run({ $sinceUnixTimestamp: sinceUnixTimestamp })
   const rows = stmt.all()
 
+  if (rows.length < 1) {
+    return null
+  }
+
   const parseRes = await buttonEvent.safeParseAsync(rows[0])
   if (parseRes.success) {
     return parseRes.data!
   }
   logger.info(
-    'getLatestButtonEvent(): button_event parsing failed: ' + parseRes.error,
+    'getLatestButtonEvent(): button_event parsing failed: ' +
+      parseRes.error +
+      '; data: ' +
+      JSON.stringify(rows[0]),
   )
   return null
 }
