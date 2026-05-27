@@ -758,10 +758,10 @@ async function initSleepPositionTables(_db: Database) {
   const ccpr = await _db.run(
     `CREATE TABLE IF NOT EXISTS sleep_position
       (
-        stime INTEGER,
+        stime_sec INTEGER,
         prediction TEXT,
         confidence REAL,
-        PRIMARY KEY (stime)
+        PRIMARY KEY (stime_sec)
       );`,
   )
   logger.info(
@@ -769,7 +769,7 @@ async function initSleepPositionTables(_db: Database) {
   )
 
   const cidx = await _db.run(
-    `CREATE INDEX IF NOT EXISTS sp_stime_idx ON sleep_position(stime);`,
+    `CREATE INDEX IF NOT EXISTS sp_stime_sec_idx ON sleep_position(stime_sec);`,
   )
   logger.info(
     `initSleepPositionTables(): CREATE INDEX on sleep_position table: ${JSON.stringify(cidx)}`,
@@ -779,6 +779,7 @@ async function initSleepPositionTables(_db: Database) {
 async function insertSleepPosition(_db: Database, sleepPositionStr: string) {
   // expect sleepPositionStr in form of:
   // {"prediction": "Back", "confidence": 0.9342930316925049, "timestamp": 1776828735}
+  // timestamp is in seconds, not milliseconds
   const sleepPositionResponseSchema = z.object({
     prediction: z.string(),
     confidence: z.number(),
@@ -799,20 +800,20 @@ async function insertSleepPosition(_db: Database, sleepPositionStr: string) {
   const { prediction, confidence, timestamp } = parsedSleepPosition.data
 
   const stmt = _db.prepare(
-    `INSERT INTO sleep_position (stime, prediction, confidence) ` +
-      `VALUES ($stime, $prediction, $confidence);`,
+    `INSERT INTO sleep_position (stime_sec, prediction, confidence) ` +
+      `VALUES ($stime_sec, $prediction, $confidence);`,
   )
 
   try {
     logger.debug(
       `insertSleepPosition(): inserting sleep_position: ${JSON.stringify({
-        stime: timestamp,
+        stime_sec: timestamp,
         prediction: prediction,
         confidence: confidence,
       })}`,
     )
     stmt.run({
-      $stime: timestamp,
+      $stime_sec: timestamp,
       $prediction: prediction,
       $confidence: confidence,
     })
@@ -893,34 +894,34 @@ async function getLatestButtonEvent(
 
 async function getSleepPositionHistory(
   _db: Database,
-  startTimestampMinutes: number,
-  endTimestampMinutes: number,
+  startTimestampSec: number, // start timestamp in seconds
+  endTimestampSec: number, // end timestamp in seconds
 ) {
   const sql =
     `SELECT * FROM sleep_position ` +
-    `WHERE stime >= $startTimestamp AND stime <= $endTimestamp ` +
-    `ORDER BY stime ASC`
+    `WHERE stime_sec >= $startTimestampSec AND stime_sec <= $endTimestampSec ` +
+    `ORDER BY stime_sec DESC`
   const stmt = _db.prepare(sql)
   const res = stmt.all({
-    $startTimestamp: startTimestampMinutes,
-    $endTimestamp: endTimestampMinutes,
+    $startTimestampSec: startTimestampSec,
+    $endTimestampSec: endTimestampSec,
   })
   return res as {
-    stime: number
+    stime_sec: number
     prediction: string
     confidence: number
   }[]
 }
 
-// { now }: Unix timpestamp in milliseconds
+// { now }: UNIX timestamp in milliseconds
 async function isUserInUndesirableSleepPosition(
   _db: Database,
-  { now: _now = -1 }: { now?: number } = {},
+  { now: _now = -1 }: { now?: number } = {}, // now: UNIX timestamp in milliseconds
 ) {
-  // nowMinutes - unix timestampin minutes
-  const nowMinutes = _now === -1 ? Math.floor(Date.now() / 1000) : _now / 1000
+  // nowSeconds - UNIX timestamp in seconds
+  const nowSeconds = _now === -1 ? Math.floor(Date.now() / 1000) : _now / 1000
   // retrieve the last 10 minutes of sleep position data
-  const k = await getSleepPositionHistory(_db, nowMinutes - 10 * 60, _now)
+  const k = await getSleepPositionHistory(_db, nowSeconds - 10 * 60, nowSeconds)
 
   if (!k || k.length === 0) {
     logger.debug(`isUserInUndesirableSleepPosition(): no sleep position data`)
@@ -928,9 +929,10 @@ async function isUserInUndesirableSleepPosition(
   }
 
   // do not make decision based on data more stale than 60 seconds
-  if (Math.abs(nowMinutes - k[k.length - 1].stime) > 60) {
+  if (nowSeconds - k[0].stime_sec > 60) {
     logger.debug(
-      `isUserInUndesirableSleepPosition(): sleep position data is stale`,
+      'isUserInUndesirableSleepPosition(): sleep position data is stale, ' +
+        `nowSeconds: ${nowSeconds}, last_stime_sec: ${k[0].stime_sec}`,
     )
     return false
   }
@@ -1124,7 +1126,7 @@ async function shouldSleepPositionAlarmBePlayed({
   decisionData: DecisionData
   isUserInUndesirableSleepPosition: boolean
   now?: number
-}) {
+}): Promise<boolean> {
   const _now = now === -1 ? Date.now() : now
 
   if (!decisionData) {
