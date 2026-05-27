@@ -1315,10 +1315,12 @@ async function main() {
 
     const decisionData = await getDecisionData(db, edb)
     const alarmRes = await shouldAlarmBePlayed({ decisionData })
-    logger.debug(
-      `alarm check interval: shouldAlarmBePlayed(): ${JSON.stringify(alarmRes)}`,
+    logger.info(
+      `alarm check interval: shouldAlarmBePlayed(): ${JSON.stringify(alarmRes)}; ` +
+        `decisionData: ${JSON.stringify(decisionData)}`,
     )
     if (alarmRes) {
+      logger.info(`playing alarm tone #7 (likely sleeping with machine off)`)
       await playToneOnDevice(mqttClient, 7)
     }
 
@@ -1329,12 +1331,16 @@ async function main() {
       decisionData,
       isUserInUndesirableSleepPosition: _isUserInUndesirableSleepPosition,
     })
-    logger.debug(
-      `alarm check interval: shouldSleepPositionAlarmBePlayed(): ${JSON.stringify(
-        spAlarmRes,
-      )}`,
+    logger.info(
+      `alarm check interval: shouldSleepPositionAlarmBePlayed(): ` +
+        `${JSON.stringify(spAlarmRes)}; ` +
+        `decisionData: ${JSON.stringify(decisionData)}; ` +
+        `_isUserInUndesirableSleepPosition: ${JSON.stringify(
+          _isUserInUndesirableSleepPosition,
+        )}`,
     )
     if (spAlarmRes) {
+      logger.info(`playing alarm tone #9 (bad sleep position)`)
       await playToneOnDevice(mqttClient, 9)
     }
   }, 13000) // 13 seconds because the Reveille (tune #8) takes about 12 seconds to play
