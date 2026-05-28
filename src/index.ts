@@ -776,6 +776,56 @@ async function initSleepPositionTables(_db: Database) {
   )
 }
 
+async function initAlarmEventTable(_db: Database) {
+  const ccpr = await _db.run(
+    `CREATE TABLE IF NOT EXISTS alarm_event
+      (
+        atime INTEGER, -- UNIX timestamp in milliseconds
+        tune_no INTEGER,
+        decision_data TEXT,
+        PRIMARY KEY (atime)
+      );`,
+  )
+  logger.info(
+    `initAlarmEventTable(): CREATE alarm_event table: ${JSON.stringify(ccpr)}`,
+  )
+
+  const cidx = await _db.run(
+    `CREATE INDEX IF NOT EXISTS ae_atime_idx ON alarm_event(atime);`,
+  )
+  logger.info(
+    `initAlarmEventTable(): CREATE INDEX on alarm_event table: ${JSON.stringify(cidx)}`,
+  )
+}
+
+async function insertAlarmEvent(
+  _db: Database,
+  tuneNo: number,
+  decisionDataStr: string,
+) {
+  const stmt = _db.prepare(
+    `INSERT INTO alarm_event (atime, tune_no, decision_data) ` +
+      `VALUES ($atime, $tuneNo, $decisionDataStr);`,
+  )
+
+  try {
+    logger.debug(
+      `insertAlarmEvent(): inserting alarm_event: ${JSON.stringify({
+        atime: Date.now(),
+        tuneNo: tuneNo,
+        decisionDataStr: decisionDataStr,
+      })}`,
+    )
+    stmt.run({
+      $atime: Date.now(),
+      $tuneNo: tuneNo,
+      $decisionDataStr: decisionDataStr,
+    })
+  } catch (err) {
+    logger.warn(`insertAlarmEvent(): database alarm_event insert error: ${err}`)
+  }
+}
+
 async function insertSleepPosition(_db: Database, sleepPositionStr: string) {
   // expect sleepPositionStr in form of:
   // {"prediction": "Back", "confidence": 0.9342930316925049, "timestamp": 1776828735}
@@ -1229,6 +1279,7 @@ async function main() {
   await initSqliteTables(db)
   await initButtonEventTables(edb)
   await initSleepPositionTables(db)
+  await initAlarmEventTable(db)
 
   const k = await getDevicePowerReadings(influxdb, db)
   logger.info(`main(): getDevicePowerReadings(): ${JSON.stringify(k)}`)
@@ -1320,6 +1371,7 @@ async function main() {
         `decisionData: ${JSON.stringify(decisionData)}`,
     )
     if (alarmRes) {
+      await insertAlarmEvent(db, 7, JSON.stringify(decisionData))
       logger.info(`playing alarm tone #7 (likely sleeping with machine off)`)
       await playToneOnDevice(mqttClient, 7)
     }
@@ -1340,6 +1392,15 @@ async function main() {
         )}`,
     )
     if (spAlarmRes) {
+      await insertAlarmEvent(
+        db,
+        9,
+        JSON.stringify(
+          Object.assign({}, decisionData, {
+            isUserInUndesirableSleepPosition: _isUserInUndesirableSleepPosition,
+          }),
+        ),
+      )
       logger.info(`playing alarm tone #9 (bad sleep position)`)
       await playToneOnDevice(mqttClient, 9)
     }
