@@ -33,7 +33,9 @@ export default function ButtonEvents() {
     }
   }
 
-  return (
+  return !bEvents || bEvents.length < 1 ? (
+    <div>No events</div>
+  ) : (
     <>
       {bEvents.map((be) => (
         <div className="button-event">

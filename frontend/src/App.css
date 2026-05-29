@@ -1,8 +1,16 @@
 #root {
   max-width: 1280px;
   margin: 0 auto;
-  padding: 2rem;
+  padding: 1rem 2rem;
   text-align: center;
+}
+
+h1 {
+  margin: 0;
+}
+
+h2 {
+  margin: 0;
 }
 
 .logo {
@@ -42,7 +50,11 @@
 }
 
 .button-event {
-  border-bottom: 0.1em solid gray;
-  padding: 0.5em;
-  margin: 0.5em;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1.5rem;
+  border-bottom: 0.1em solid rgba(128, 128, 128, 0.4);
+  padding: 0.4rem 1rem;
+  margin: 0.25rem 0;
 }

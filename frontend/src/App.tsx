@@ -2,7 +2,6 @@ import './App.css'
 import ButtonEvents from './ButtonEvents'
 
 function App() {
-
   return (
     <>
       <h1>off-alarm</h1>
