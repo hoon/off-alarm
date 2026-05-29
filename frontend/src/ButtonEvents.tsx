@@ -39,11 +39,24 @@ export default function ButtonEvents() {
     <>
       {bEvents.map((be) => (
         <div className="button-event">
-          <div>{new Date(be.etime).toLocaleString()}</div>
-          <div>{eventTypeNumberToText(be.event_type)}</div>
-          {be.temp_c && <div>{Math.round(be.temp_c * 10) / 10} &deg;C</div>}
+          <div className="button-event-date">
+            {new Date(be.etime).toISOString().split('T')[0]}
+          </div>
+          <div className="button-event-time">
+            {new Date(be.etime).toLocaleTimeString()}
+          </div>
+          <div className="button-event-type">
+            {eventTypeNumberToText(be.event_type)}
+          </div>
+          {be.temp_c != null && (
+            <div className="button-event-temp">
+              {be.temp_c.toFixed(1)} &deg;C
+            </div>
+          )}
           {be.illuminance_lux && (
-            <div>{Math.round(be.illuminance_lux * 1000) / 1000} lx</div>
+            <div className="button-event-lux">
+              {be.illuminance_lux.toFixed(1)} lx
+            </div>
           )}
         </div>
       ))}

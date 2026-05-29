@@ -50,11 +50,46 @@ h2 {
 }
 
 .button-event {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+  display: grid;
+  grid-template-columns: 1.2fr 1.2fr 1.5fr 1fr 1fr;
   gap: 1.5rem;
+  align-items: center;
   border-bottom: 0.1em solid rgba(128, 128, 128, 0.4);
   padding: 0.4rem 1rem;
   margin: 0.25rem 0;
+  text-align: left;
 }
+
+.button-event:last-child {
+  border-bottom: none;
+}
+
+.button-event-date {
+  grid-column: 1;
+  font-family: Consolas, Monaco, monospace;
+  text-align: right;
+}
+
+.button-event-time {
+  grid-column: 2;
+  font-family: Consolas, Monaco, monospace;
+  text-align: right;
+}
+
+.button-event-type {
+  grid-column: 3;
+  text-align: right;
+}
+
+.button-event-temp {
+  grid-column: 4;
+  font-family: Consolas, Monaco, monospace;
+  text-align: right;
+}
+
+.button-event-lux {
+  grid-column: 5;
+  font-family: Consolas, Monaco, monospace;
+  text-align: right;
+}
+
