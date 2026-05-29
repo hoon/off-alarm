@@ -987,9 +987,22 @@ async function isUserInUndesirableSleepPosition(
     return false
   }
 
+  // not confident enough that the user is in a bad position
+  if (k[0].confidence < 0.9) {
+    logger.debug(
+      'isUserInUndesirableSleepPosition(): not confident enough that the user is in a bad position, ' +
+        `nowSeconds: ${nowSeconds}, last_stime_sec: ${k[0].stime_sec}`,
+    )
+    return false
+  }
+
   // if any of the readings in the past 10 minutes is not 'Back'
   // don't play alarm
   if (k.some((x) => x.prediction !== 'Back')) {
+    logger.debug(
+      'isUserInUndesirableSleepPosition(): ' +
+        'at least one of the readings in the past 10 minutes is not "Back"',
+    )
     return false
   }
 
@@ -1192,6 +1205,15 @@ async function shouldSleepPositionAlarmBePlayed({
 
   // if not sufficiently and consistently dark, don't play alarm
   if (decisionData.darkRatio && decisionData.darkRatio < 0.95) {
+    return false
+  }
+
+  // in_bed button was pressed less than 3 minutes ago
+  if (_now - decisionData.lastButtonTime! < 3 * 60 * 1000) {
+    logger.debug(
+      `shouldSleepPositionAlarmBePlayed(): latest button press type is InBed, ` +
+        `but it was less than 3 minutes ago`,
+    )
     return false
   }
 
