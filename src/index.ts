@@ -1208,11 +1208,11 @@ async function shouldSleepPositionAlarmBePlayed({
     return false
   }
 
-  // in_bed button was pressed less than 3 minutes ago
-  if (_now - decisionData.lastButtonTime! < 3 * 60 * 1000) {
+  // in_bed button was pressed less than 10 minutes ago
+  if (_now - decisionData.lastButtonTime! < 10 * 60 * 1000) {
     logger.debug(
       `shouldSleepPositionAlarmBePlayed(): latest button press type is InBed, ` +
-        `but it was less than 3 minutes ago`,
+        `but it was less than 10 minutes ago`,
     )
     return false
   }
