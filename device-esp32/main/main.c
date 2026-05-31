@@ -109,6 +109,7 @@ typedef struct {
 static esp_mqtt_client_handle_t mqtt_client = NULL;
 static QueueHandle_t button_evt_queue = NULL;
 static QueueHandle_t tune_queue = NULL;  // Queue for tune playback
+static TaskHandle_t tune_player_task_handle = NULL;
 
 // Button configurations
 static button_config_t buttons[] = {
@@ -614,7 +615,7 @@ static void buzzer_init(void)
     }
     
     // Start tune player task
-    xTaskCreate(tune_player_task, "tune_player", 4096, NULL, 5, NULL);
+    xTaskCreate(tune_player_task, "tune_player", 4096, NULL, 5, &tune_player_task_handle);
     
     // Configure LEDC timer for buzzer
     ledc_timer_config_t ledc_timer = {
@@ -704,6 +705,9 @@ static void play_tune(int tune_id)
     
     ESP_LOGI(TAG, "Playing tune %d (BPM: %d)", tune_id, tune->bpm);
     
+    // Clear any pending pre-emption notifications before starting the tune
+    ulTaskNotifyTake(pdTRUE, 0);
+    
     for (int i = 0; i < tune->length; i++) {
         musical_note_t *note = &tune->notes[i];
         uint16_t freq = note_to_frequency(note->note, note->octave);
@@ -723,11 +727,22 @@ static void play_tune(int tune_id)
             ledc_update_duty(LEDC_MODE, LEDC_CHANNEL);
         }
         
-        // Wait for note duration
-        vTaskDelay(duration_ms / portTICK_PERIOD_MS);
+        // Wait for note duration or pre-emption notification
+        uint32_t ticks = duration_ms / portTICK_PERIOD_MS;
+        bool pre_empted = false;
+        if (ticks > 0) {
+            if (ulTaskNotifyTake(pdTRUE, ticks) > 0) {
+                pre_empted = true;
+            }
+        }
+        
+        if (pre_empted) {
+            ESP_LOGI(TAG, "Tune %d pre-empted mid-tune.", tune_id);
+            break;
+        }
     }
     
-    // Ensure buzzer is off when tune is finished
+    // Ensure buzzer is off when tune is finished or pre-empted
     ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, 0);
     ledc_update_duty(LEDC_MODE, LEDC_CHANNEL);
 }
@@ -742,6 +757,11 @@ static void button_task(void *arg)
             ESP_LOGI(TAG, "Button %d pressed", button_id);
             
             const int tune_id = buttons[button_id - 1].tune_id;
+            // Clear any stale tunes and notify the tune player task to pre-empt currently playing tune
+            xQueueReset(tune_queue);
+            if (tune_player_task_handle != NULL) {
+                xTaskNotifyGive(tune_player_task_handle);
+            }
             if (xQueueSend(tune_queue, &tune_id, 0) == pdTRUE) {
                 ESP_LOGI(TAG, "Button %d, tune %d added to queue", button_id, tune_id);
             } else {
