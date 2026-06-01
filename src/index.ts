@@ -1047,7 +1047,9 @@ async function getDecisionData(
   const decisionData = {
     lastButtonType: latestButtonEvent?.event_type,
     lastButtonTime: latestButtonEvent?.etime,
-    darkRatio: darkInfo?.darkRatio || undefined,
+    darkRatio: Number.isFinite(darkInfo?.darkRatio)
+      ? darkInfo!.darkRatio
+      : undefined,
     offRatio: devicePowerInfo?.offRatio,
     lastWatt: devicePowerInfo?.lastMeasuredPowerWatt,
     ...devicePowerStats,
@@ -1204,7 +1206,7 @@ async function shouldSleepPositionAlarmBePlayed({
   }
 
   // if not sufficiently and consistently dark, don't play alarm
-  if (decisionData.darkRatio && decisionData.darkRatio < 0.95) {
+  if ((decisionData.darkRatio ?? 0) < 0.95) {
     return false
   }
 
