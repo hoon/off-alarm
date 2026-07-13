@@ -1028,7 +1028,7 @@ async function isUserInUndesirableSleepPosition(
   }
 
   // not confident enough that the user is in a bad position
-  if (k[0].position_confidence < 0.9) {
+  if (k[0].position_confidence < 0.95) {
     logger.debug(
       'isUserInUndesirableSleepPosition(): not confident enough that the user is in a bad position, ' +
         `nowSeconds: ${nowSeconds}, last_stime_sec: ${k[0].stime_sec}`,
