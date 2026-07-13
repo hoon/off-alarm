@@ -831,8 +831,7 @@ async function insertAlarmEvent(
 }
 
 async function insertSleepPosition(_db: Database, sleepPositionStr: string) {
-  // expect sleepPositionStr in form of:
-  // {"prediction": "Back", "confidence": 0.9342930316925049, "timestamp": 1776828735}
+  // expect sleepPositionStr in form of JSON
   // timestamp is in seconds, not milliseconds
   const sleepPositionResponseSchema = z.object({
     position: z.string(),
@@ -1405,7 +1404,17 @@ async function main() {
       logger.info(`MQTT receive: button event: ${str}`)
       await insertButtonEvent(db, edb, mqttClient, str)
     } else if (topic === process.env.MQTT_TOPIC_SLEEP_POSITION!) {
-      // {"prediction": "Back", "confidence": 0.9342930316925049, "timestamp": 1776828735}
+      /* Example MQTT sleep position message:
+        {
+          "position": "Empty",
+          "position_confidence": 0.999994158744812,
+          "sleep_status": "Awake",
+          "sleep_status_confidence": 0.9999995231628418,
+          "mask_status": "Mask off",
+          "mask_status_confidence": 1,
+          "timestamp": 1783911133
+        }
+      */
       const str = payload.toString()
       logger.info(`MQTT receive: sleep position: ${str}`)
       await insertSleepPosition(db, str)
