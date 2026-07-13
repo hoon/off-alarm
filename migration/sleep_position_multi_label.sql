@@ -1,4 +1,4 @@
--- sqlite3 sensor.sqlite ".read src/sql/sleep_position_multi_label.sql"
+-- sqlite3 sensor.sqlite ".read migration/sleep_position_multi_label.sql"
 INSERT INTO sleep_position
     SELECT
         stime_sec,

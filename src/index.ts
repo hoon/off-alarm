@@ -988,7 +988,7 @@ async function getSleepPositionHistory(
   endTimestampSec: number, // end timestamp in seconds
 ) {
   const sql =
-    `SELECT * FROM sleep_position ` +
+    `SELECT stime_sec, position, position_confidence FROM sleep_position ` +
     `WHERE stime_sec >= $startTimestampSec AND stime_sec <= $endTimestampSec ` +
     `ORDER BY stime_sec DESC`
   const stmt = _db.prepare(sql)
@@ -998,8 +998,8 @@ async function getSleepPositionHistory(
   })
   return res as {
     stime_sec: number
-    prediction: string
-    confidence: number
+    position: string
+    position_confidence: number
   }[]
 }
 
@@ -1028,7 +1028,7 @@ async function isUserInUndesirableSleepPosition(
   }
 
   // not confident enough that the user is in a bad position
-  if (k[0].confidence < 0.9) {
+  if (k[0].position_confidence < 0.9) {
     logger.debug(
       'isUserInUndesirableSleepPosition(): not confident enough that the user is in a bad position, ' +
         `nowSeconds: ${nowSeconds}, last_stime_sec: ${k[0].stime_sec}`,
@@ -1038,7 +1038,7 @@ async function isUserInUndesirableSleepPosition(
 
   // if any of the readings in the past 10 minutes is not 'Back'
   // don't play alarm
-  if (k.some((x) => x.prediction !== 'Back')) {
+  if (k.some((x) => x.position !== 'Back')) {
     logger.debug(
       'isUserInUndesirableSleepPosition(): ' +
         'at least one of the readings in the past 10 minutes is not "Back"',
