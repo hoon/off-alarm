@@ -759,8 +759,12 @@ async function initSleepPositionTables(_db: Database) {
     `CREATE TABLE IF NOT EXISTS sleep_position
       (
         stime_sec INTEGER,
-        prediction TEXT,
-        confidence REAL,
+        position TEXT,
+        position_confidence REAL,
+        sleep_status TEXT,
+        sleep_status_confidence REAL,
+        mask_status TEXT,
+        mask_status_confidence REAL,
         PRIMARY KEY (stime_sec)
       );`,
   )
@@ -831,8 +835,12 @@ async function insertSleepPosition(_db: Database, sleepPositionStr: string) {
   // {"prediction": "Back", "confidence": 0.9342930316925049, "timestamp": 1776828735}
   // timestamp is in seconds, not milliseconds
   const sleepPositionResponseSchema = z.object({
-    prediction: z.string(),
-    confidence: z.number(),
+    position: z.string(),
+    position_confidence: z.number(),
+    sleep_status: z.string(),
+    sleep_status_confidence: z.number(),
+    mask_status: z.string(),
+    mask_status_confidence: z.number(),
     timestamp: z.number(),
   })
 
@@ -847,25 +855,57 @@ async function insertSleepPosition(_db: Database, sleepPositionStr: string) {
     return
   }
 
-  const { prediction, confidence, timestamp } = parsedSleepPosition.data
+  const {
+    position,
+    position_confidence,
+    sleep_status,
+    sleep_status_confidence,
+    mask_status,
+    mask_status_confidence,
+    timestamp,
+  } = parsedSleepPosition.data
 
   const stmt = _db.prepare(
-    `INSERT INTO sleep_position (stime_sec, prediction, confidence) ` +
-      `VALUES ($stime_sec, $prediction, $confidence);`,
+    `INSERT INTO sleep_position (
+      stime_sec,
+      position,
+      position_confidence,
+      sleep_status,
+      sleep_status_confidence,
+      mask_status,
+      mask_status_confidence
+    ) ` +
+      `VALUES (
+      $stime_sec, 
+      $position,
+      $position_confidence,
+      $sleep_status,
+      $sleep_status_confidence,
+      $mask_status,
+      $mask_status_confidence
+    );`,
   )
 
   try {
     logger.debug(
       `insertSleepPosition(): inserting sleep_position: ${JSON.stringify({
         stime_sec: timestamp,
-        prediction: prediction,
-        confidence: confidence,
+        position,
+        position_confidence,
+        sleep_status,
+        sleep_status_confidence,
+        mask_status,
+        mask_status_confidence,
       })}`,
     )
     stmt.run({
       $stime_sec: timestamp,
-      $prediction: prediction,
-      $confidence: confidence,
+      $position: position,
+      $position_confidence: position_confidence,
+      $sleep_status: sleep_status,
+      $sleep_status_confidence: sleep_status_confidence,
+      $mask_status: mask_status,
+      $mask_status_confidence: mask_status_confidence,
     })
   } catch (err) {
     logger.warn(

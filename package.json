@@ -8,7 +8,7 @@
     "prod": "bun src/index.ts"
   },
   "devDependencies": {
-    "@types/bun": "latest",
+    "@types/bun": "^1.3.14",
     "cross-env": "^7.0.3",
     "pino-pretty": "^11.2.2",
     "prettier": "^3.3.3"
