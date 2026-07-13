@@ -37,8 +37,15 @@ export default function ButtonEvents() {
     <div>No events</div>
   ) : (
     <>
+      <div className="button-event button-event-header">
+        <div className="button-event-date">Date</div>
+        <div className="button-event-time">Time</div>
+        <div className="button-event-type">Event</div>
+        <div className="button-event-temp">Temp</div>
+        <div className="button-event-lux">Lux</div>
+      </div>
       {bEvents.map((be) => (
-        <div className="button-event">
+        <div className="button-event" key={be.etime}>
           <div className="button-event-date">
             {new Date(be.etime).toISOString().split('T')[0]}
           </div>

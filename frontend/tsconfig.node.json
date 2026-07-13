@@ -9,5 +9,5 @@
     "strict": true,
     "noEmit": true
   },
-  "include": ["vite.config.ts", "src/mockButtonEvents.ts"]
+  "include": ["vite.config.ts", "src/mockButtonEvents.ts", "src/mockAlarmEvents.ts"]
 }

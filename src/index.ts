@@ -5,6 +5,8 @@ import mqtt from 'mqtt'
 import { z } from 'zod'
 import pino from 'pino'
 import { getVariancePop } from './statutils'
+import webFrontendPage from '../frontend/index.html'
+
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' })
 
 async function getInfluxDb() {
@@ -33,6 +35,12 @@ enum ButtonEventType {
   Awake = 20,
   UpFromBed = 30,
 }
+
+const alarmEvent = z.object({
+  atime: z.number(),
+  tune_no: z.number(),
+  decision_data: z.string(),
+})
 
 const DEVICE_POWER_ON_THRESHOLD_WATT: number = Number.parseFloat(
   process.env.DEVICE_POWER_ON_THRESHOLD_WATT || '4',
@@ -1307,6 +1315,49 @@ async function getButtonEvents(
   }
   return parseRes.data
 }
+
+async function getAlarmEvents(
+  _db: Database,
+  {
+    forSec = 60 * 60 * 24 * 2,
+    refTimeMs = -1,
+  }: {
+    forSec?: number
+    refTimeMs?: number
+  } = {},
+) {
+  const sql = `
+    SELECT
+        atime,
+        tune_no,
+        decision_data
+    FROM alarm_event
+    WHERE atime >= $unixTimeMs - $forMs
+    AND atime <= $unixTimeMs
+    ORDER BY atime DESC;`
+
+  const unixTimeMs = refTimeMs === -1 ? Date.now() : refTimeMs
+
+  const stmt = _db.prepare(sql)
+  stmt.run({
+    $unixTimeMs: unixTimeMs,
+    $forMs: forSec * 1000,
+  })
+  const res = stmt.all()
+
+  const alarmEventArray = z.array(alarmEvent)
+
+  const parseRes = await alarmEventArray.safeParseAsync(res)
+
+  if (parseRes.error) {
+    logger.warn(
+      `getAlarmEvents(): data returned from database wasn't valid, error msg: ${parseRes.error}`,
+    )
+    return null
+  }
+  return parseRes.data
+}
+
 /*
 TODO: There needs to be a way retrieve the button event times so that you can know
 when you went to bed, when you awoke, when you got out, etc.
@@ -1486,6 +1537,11 @@ async function main() {
       if (url.pathname === '/api/v1/button-events') {
         const beRes = await getButtonEvents(edb)
         const r = new Response(JSON.stringify(beRes))
+        r.headers.set('Content-Type', 'application/json; charset=utf-8')
+        return r
+      } else if (url.pathname === '/api/v1/alarm-events') {
+        const aeRes = await getAlarmEvents(db)
+        const r = new Response(JSON.stringify(aeRes))
         r.headers.set('Content-Type', 'application/json; charset=utf-8')
         return r
       } else if (url.pathname === '/') {
