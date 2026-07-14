@@ -989,13 +989,34 @@ async function getLatestButtonEvent(
   return null
 }
 
+const sleepPosition = z.object({
+  stime_sec: z.number(),
+  position: z.string(),
+  position_confidence: z.number(),
+  sleep_status: z.string(),
+  sleep_status_confidence: z.number(),
+  mask_status: z.string(),
+  mask_status_confidence: z.number(),
+})
+
+type SleepPosition = z.infer<typeof sleepPosition>
+
 async function getSleepPositionHistory(
   _db: Database,
   startTimestampSec: number, // start timestamp in seconds
   endTimestampSec: number, // end timestamp in seconds
-) {
+): Promise<SleepPosition[]> {
   const sql =
-    `SELECT stime_sec, position, position_confidence FROM sleep_position ` +
+    `SELECT
+      stime_sec,
+      position,
+      position_confidence,
+      sleep_status,
+      sleep_status_confidence,
+      mask_status,
+      mask_status_confidence
+      ` +
+    `FROM sleep_position ` +
     `WHERE stime_sec >= $startTimestampSec AND stime_sec <= $endTimestampSec ` +
     `ORDER BY stime_sec DESC`
   const stmt = _db.prepare(sql)
@@ -1003,11 +1024,7 @@ async function getSleepPositionHistory(
     $startTimestampSec: startTimestampSec,
     $endTimestampSec: endTimestampSec,
   })
-  return res as {
-    stime_sec: number
-    position: string
-    position_confidence: number
-  }[]
+  return res as SleepPosition[]
 }
 
 // { now }: UNIX timestamp in milliseconds
@@ -1316,6 +1333,50 @@ async function getButtonEvents(
   return parseRes.data
 }
 
+/*
+ * sleepPositions: sleep positions
+ * refSec: reference point, in Unix timestamp in seconds, from which in will sample backwards in time
+ * sampleMinutes: minutes of sleep positions to sample backwards in time
+ */
+async function shouldSleepWoMaskAlarmBePlayed({
+  sleepPositions,
+  decisionData,
+  refSec,
+  sampleMinutes = 10,
+}: {
+  sleepPositions: SleepPosition[]
+  decisionData: DecisionData
+  refSec: number
+  sampleMinutes?: number
+}) {
+  if (refSec - sleepPositions[0].stime_sec > 2 * 60) {
+    // the most SleepPosition is too stale compared to refTime
+    return false
+  }
+
+  const usp = sleepPositions.filter(
+    (sp) => sp.stime_sec > refSec - 60 * sampleMinutes,
+  )
+
+  if (usp.length < sampleMinutes / 2) {
+    // too few valid sleep position readings
+    return false
+  }
+
+  if (
+    usp.every(
+      (sp) => sp.mask_status === 'Mask off' && sp.sleep_status === 'Sleeping',
+    ) &&
+    decisionData.lastButtonType === ButtonEventType.InBed &&
+    decisionData.lastButtonTime &&
+    decisionData.lastButtonTime < (refSec - 10 * 60) * 1000
+  ) {
+    return true
+  }
+
+  return false
+}
+
 async function getAlarmEvents(
   _db: Database,
   {
@@ -1527,6 +1588,37 @@ async function main() {
       )
       logger.info(`playing alarm tone #9 (bad sleep position)`)
       await playToneOnDevice(mqttClient, 9)
+    }
+    const nowSeconds = Math.floor(Date.now() / 1000)
+    const sps = await getSleepPositionHistory(
+      db,
+      nowSeconds - 10 * 60,
+      nowSeconds,
+    )
+    const moAlarmRes = await shouldSleepWoMaskAlarmBePlayed({
+      sleepPositions: sps,
+      decisionData: decisionData,
+      refSec: nowSeconds,
+    })
+    logger.info(
+      `alarm check interval: shouldSleepWoMaskAlarmBePlayed(): ` +
+        `${JSON.stringify(moAlarmRes)}; ` +
+        `decisionData: ${JSON.stringify(decisionData)}; ` +
+        `sps: ${JSON.stringify(sps)}`,
+    )
+    if (moAlarmRes) {
+      await insertAlarmEvent(
+        db,
+        8,
+        JSON.stringify(
+          Object.assign({}, decisionData, {
+            sleepPositions: sps,
+            shouldSleepWoMaskAlarmBePlayed: moAlarmRes,
+          }),
+        ),
+      )
+      logger.info(`playing alarm tone #8 (likely sleeping with mask off)`)
+      await playToneOnDevice(mqttClient, 8)
     }
   }, 13000) // 13 seconds because the Reveille (tune #8) takes about 12 seconds to play
 
