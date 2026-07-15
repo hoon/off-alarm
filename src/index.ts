@@ -1081,6 +1081,19 @@ export interface DecisionData extends DevicePowerStats {
   lastWatt: number | undefined // last measured power use in watts
 }
 
+function wasInBedButtonPressedRecently(
+  decisionData: DecisionData,
+  recentSec: number = 10,
+) {
+  const now = Date.now()
+  if (decisionData.lastButtonType === ButtonEventType.InBed) {
+    if (now - decisionData.lastButtonTime! > recentSec * 60 * 1000) {
+      return true
+    }
+    return false
+  }
+}
+
 async function getDecisionData(
   _db: Database,
   _edb: Database,
@@ -1540,6 +1553,14 @@ async function main() {
 
   setInterval(async () => {
     const decisionData = await getDecisionData(db, edb)
+
+    if (wasInBedButtonPressedRecently(decisionData)) {
+      // InBed button was pressed very recently
+      // the sleeper is likely adjusting in bed
+      // don't play any alarm
+      return
+    }
+
     const alarmRes = await shouldAlarmBePlayed({ decisionData })
     logger.info(
       `alarm check interval: shouldAlarmBePlayed(): ${JSON.stringify(alarmRes)}; ` +
