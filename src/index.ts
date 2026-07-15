@@ -1338,17 +1338,25 @@ async function getButtonEvents(
  * refSec: reference point, in Unix timestamp in seconds, from which in will sample backwards in time
  * sampleMinutes: minutes of sleep positions to sample backwards in time
  */
-async function shouldSleepWoMaskAlarmBePlayed({
+async function shouldMaskOffAlarmBePlayed({
   sleepPositions,
-  decisionData,
   refSec,
   sampleMinutes = 10,
 }: {
   sleepPositions: SleepPosition[]
-  decisionData: DecisionData
   refSec: number
   sampleMinutes?: number
 }) {
+  if (!sleepPosition) {
+    // invalid sleep positions array
+    return false
+  }
+
+  if (sleepPositions.length < sampleMinutes / 2 || !sleepPositions[0]) {
+    // too few sleep position readings
+    return false
+  }
+
   if (refSec - sleepPositions[0].stime_sec > 2 * 60) {
     // the most SleepPosition is too stale compared to refTime
     return false
@@ -1359,17 +1367,14 @@ async function shouldSleepWoMaskAlarmBePlayed({
   )
 
   if (usp.length < sampleMinutes / 2) {
-    // too few valid sleep position readings
+    // too few valid sleep position readings that are recent to the reference time
     return false
   }
 
   if (
     usp.every(
       (sp) => sp.mask_status === 'Mask off' && sp.sleep_status === 'Sleeping',
-    ) &&
-    decisionData.lastButtonType === ButtonEventType.InBed &&
-    decisionData.lastButtonTime &&
-    decisionData.lastButtonTime < (refSec - 10 * 60) * 1000
+    )
   ) {
     return true
   }
@@ -1443,6 +1448,7 @@ after any button event is received.
 */
 
 async function main() {
+  logger.info('Starting off-alarm')
   const influxdb = await getInfluxDb()
 
   const db = process.env.PERSIST_SENSOR_DATA
@@ -1450,7 +1456,6 @@ async function main() {
     : new Database(':memory:')
   const edb = new Database('button_event.sqlite', { create: true })
 
-  // await initDuckTables(duck)
   await initSqliteTables(db)
   await initButtonEventTables(edb)
   await initSleepPositionTables(db)
@@ -1534,21 +1539,6 @@ async function main() {
   })
 
   setInterval(async () => {
-    // const res = await isItDarkRightNow()
-    // logger.info(`interval: isItDarkRightNow?: ${JSON.stringify(res)}`)
-
-    // const hres = await hasItBeenDark({ forSec: 300 })
-    // logger.info(`interval: hasItBeenDark(): ${JSON.stringify(hres)}`)
-
-    // const eres = await getLatestButtonEvent()
-    // logger.info(`interval: getLatestButtonEvent(): ${JSON.stringify(eres)}`)
-
-    // const ires = await shouldAlarmBePlayed()
-    // logger.info(`interval: isUserLikelyInBed(): ${ires}`)
-
-    // const dres = await hasDeviceBeenOff()
-    // logger.info(`interval: hasPowerDeviceBeenOff(): ${JSON.stringify(dres)}`)
-
     const decisionData = await getDecisionData(db, edb)
     const alarmRes = await shouldAlarmBePlayed({ decisionData })
     logger.info(
@@ -1595,15 +1585,13 @@ async function main() {
       nowSeconds - 10 * 60,
       nowSeconds,
     )
-    const moAlarmRes = await shouldSleepWoMaskAlarmBePlayed({
+    const moAlarmRes = await shouldMaskOffAlarmBePlayed({
       sleepPositions: sps,
-      decisionData: decisionData,
       refSec: nowSeconds,
     })
     logger.info(
-      `alarm check interval: shouldSleepWoMaskAlarmBePlayed(): ` +
+      `alarm check interval: shouldMaskOffAlarmBePlayed(): ` +
         `${JSON.stringify(moAlarmRes)}; ` +
-        `decisionData: ${JSON.stringify(decisionData)}; ` +
         `sps: ${JSON.stringify(sps)}`,
     )
     if (moAlarmRes) {
