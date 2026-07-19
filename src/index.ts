@@ -1083,11 +1083,18 @@ export interface DecisionData extends DevicePowerStats {
 
 function wasInBedButtonPressedRecently(
   decisionData: DecisionData,
-  recentSec: number = 10,
+  recentMin: number = 10, // how many minutes after an "InBed" button press should we not play an alarm
 ) {
   const now = Date.now()
   if (decisionData.lastButtonType === ButtonEventType.InBed) {
-    if (now - decisionData.lastButtonTime! > recentSec * 60 * 1000) {
+    if (!decisionData.lastButtonTime) {
+      logger.info('InBed button was pressed but lastButtonTime is undefined')
+      return false
+    }
+    if (now - decisionData.lastButtonTime < recentMin * 60 * 1000) {
+      logger.info(
+        'InBed button was pressed very recently, the sleeper is likely adjusting in bed',
+      )
       return true
     }
     return false
