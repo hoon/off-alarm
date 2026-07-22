@@ -1081,19 +1081,26 @@ export interface DecisionData extends DevicePowerStats {
   lastWatt: number | undefined // last measured power use in watts
 }
 
-function wasInBedButtonPressedRecently(
+function wasStatusChangePressedRecently(
   decisionData: DecisionData,
-  recentMin: number = 10, // how many minutes after an "InBed" button press should we not play an alarm
+  recentMin: number = 10, // how many minutes after the button press should we not play an alarm
 ) {
   const now = Date.now()
-  if (decisionData.lastButtonType === ButtonEventType.InBed) {
+  if (
+    decisionData.lastButtonType &&
+    [
+      ButtonEventType.InBed,
+      ButtonEventType.Awake,
+      ButtonEventType.UpFromBed,
+    ].includes(decisionData.lastButtonType)
+  ) {
     if (!decisionData.lastButtonTime) {
       logger.info('InBed button was pressed but lastButtonTime is undefined')
       return false
     }
     if (now - decisionData.lastButtonTime < recentMin * 60 * 1000) {
       logger.info(
-        'InBed button was pressed very recently, the sleeper is likely adjusting in bed',
+        'InBed button was pressed very recently, the sleeper is likely adjusting',
       )
       return true
     }
@@ -1267,53 +1274,6 @@ async function shouldAlarmBePlayed({
   return false
 }
 
-async function shouldSleepPositionAlarmBePlayed({
-  decisionData,
-  isUserInUndesirableSleepPosition,
-  now = -1,
-}: {
-  decisionData: DecisionData
-  isUserInUndesirableSleepPosition: boolean
-  now?: number
-}): Promise<boolean> {
-  const _now = now === -1 ? Date.now() : now
-
-  if (!decisionData) {
-    throw new Error(
-      'shouldSleepPositionAlarmBePlayed(): decisionData is undefined',
-    )
-  }
-
-  // if not "InBed" state, don't play alarm
-  if (decisionData.lastButtonType !== ButtonEventType.InBed) {
-    return false
-  }
-
-  // if not sufficiently and consistently dark, don't play alarm
-  if ((decisionData.darkRatio ?? 0) < 0.95) {
-    return false
-  }
-
-  // in_bed button was pressed less than 10 minutes ago
-  if (_now - decisionData.lastButtonTime! < 10 * 60 * 1000) {
-    logger.debug(
-      `shouldSleepPositionAlarmBePlayed(): latest button press type is InBed, ` +
-        `but it was less than 10 minutes ago`,
-    )
-    return false
-  }
-
-  // if user is in a bad sleep position, play sleep position alarm
-  if (isUserInUndesirableSleepPosition) {
-    logger.debug(
-      `shouldSleepPositionAlarmBePlayed(): user is in bad sleep position`,
-    )
-    return true
-  }
-
-  return false
-}
-
 async function getButtonEvents(
   _edb: Database,
   {
@@ -1354,11 +1314,12 @@ async function getButtonEvents(
 }
 
 /*
+ * Determines if the array of sleep positions is sufficient and recent enough for decision making.
  * sleepPositions: sleep positions
  * refSec: reference point, in Unix timestamp in seconds, from which in will sample backwards in time
  * sampleMinutes: minutes of sleep positions to sample backwards in time
  */
-async function shouldMaskOffAlarmBePlayed({
+function _isSleepPositionArrayAdequate({
   sleepPositions,
   refSec,
   sampleMinutes = 10,
@@ -1391,9 +1352,69 @@ async function shouldMaskOffAlarmBePlayed({
     return false
   }
 
+  return true
+}
+
+/*
+ * sleepPositions: sleep positions
+ * refSec: reference point, in Unix timestamp in seconds, from which in will sample backwards in time
+ * sampleMinutes: minutes of sleep positions to sample backwards in time
+ */
+async function shouldMaskOffAlarmBePlayed({
+  sleepPositions,
+  refSec,
+  sampleMinutes = 10,
+}: {
+  sleepPositions: SleepPosition[]
+  refSec: number
+  sampleMinutes?: number
+}) {
+  if (
+    !_isSleepPositionArrayAdequate({ sleepPositions, refSec, sampleMinutes })
+  ) {
+    return false
+  }
+
+  const usp = sleepPositions.filter(
+    (sp) => sp.stime_sec > refSec - 60 * sampleMinutes,
+  )
+
   if (
     usp.every(
       (sp) => sp.mask_status === 'Mask off' && sp.sleep_status === 'Sleeping',
+    )
+  ) {
+    return true
+  }
+
+  return false
+}
+
+async function shouldSleepPositionAlarmBePlayed({
+  sleepPositions,
+  refSec,
+  sampleMinutes = 10,
+}: {
+  sleepPositions: SleepPosition[]
+  refSec: number
+  sampleMinutes?: number
+}) {
+  if (
+    !_isSleepPositionArrayAdequate({ sleepPositions, refSec, sampleMinutes })
+  ) {
+    return false
+  }
+
+  const usp = sleepPositions.filter(
+    (sp) => sp.stime_sec > refSec - 60 * sampleMinutes,
+  )
+
+  if (
+    usp.every(
+      (sp) =>
+        sp.position === 'Back' &&
+        sp.sleep_status === 'Sleeping' &&
+        sp.position_confidence > 0.95,
     )
   ) {
     return true
@@ -1561,9 +1582,9 @@ async function main() {
   setInterval(async () => {
     const decisionData = await getDecisionData(db, edb)
 
-    if (wasInBedButtonPressedRecently(decisionData)) {
-      // InBed button was pressed very recently
-      // the sleeper is likely adjusting in bed
+    if (wasStatusChangePressedRecently(decisionData)) {
+      // InBed, Awake, or UpFromBed button was pressed very recently
+      // the sleeper is likely adjusting in bed or preparing to get out
       // don't play any alarm
       return
     }
@@ -1579,34 +1600,6 @@ async function main() {
       await playToneOnDevice(mqttClient, 7)
     }
 
-    const _isUserInUndesirableSleepPosition =
-      await isUserInUndesirableSleepPosition(db)
-
-    const spAlarmRes = await shouldSleepPositionAlarmBePlayed({
-      decisionData,
-      isUserInUndesirableSleepPosition: _isUserInUndesirableSleepPosition,
-    })
-    logger.info(
-      `alarm check interval: shouldSleepPositionAlarmBePlayed(): ` +
-        `${JSON.stringify(spAlarmRes)}; ` +
-        `decisionData: ${JSON.stringify(decisionData)}; ` +
-        `_isUserInUndesirableSleepPosition: ${JSON.stringify(
-          _isUserInUndesirableSleepPosition,
-        )}`,
-    )
-    if (spAlarmRes) {
-      await insertAlarmEvent(
-        db,
-        9,
-        JSON.stringify(
-          Object.assign({}, decisionData, {
-            isUserInUndesirableSleepPosition: _isUserInUndesirableSleepPosition,
-          }),
-        ),
-      )
-      logger.info(`playing alarm tone #9 (bad sleep position)`)
-      await playToneOnDevice(mqttClient, 9)
-    }
     const nowSeconds = Math.floor(Date.now() / 1000)
     const sps = await getSleepPositionHistory(
       db,
@@ -1635,6 +1628,30 @@ async function main() {
       )
       logger.info(`playing alarm tone #8 (likely sleeping with mask off)`)
       await playToneOnDevice(mqttClient, 8)
+    }
+
+    const spAlarmRes = await shouldSleepPositionAlarmBePlayed({
+      sleepPositions: sps,
+      refSec: nowSeconds,
+    })
+    logger.info(
+      `alarm check interval: shouldSleepPositionAlarmBePlayed(): ` +
+        `${JSON.stringify(spAlarmRes)}; ` +
+        `sps: ${JSON.stringify(sps)}`,
+    )
+    if (spAlarmRes) {
+      await insertAlarmEvent(
+        db,
+        7,
+        JSON.stringify(
+          Object.assign({}, decisionData, {
+            sleepPositions: sps,
+            shouldSleepWoMaskAlarmBePlayed: spAlarmRes,
+          }),
+        ),
+      )
+      logger.info(`playing alarm tone #9 (sleeping in bad position))`)
+      await playToneOnDevice(mqttClient, 9)
     }
   }, 13000) // 13 seconds because the Reveille (tune #8) takes about 12 seconds to play
 
