@@ -1642,11 +1642,11 @@ async function main() {
     if (spAlarmRes) {
       await insertAlarmEvent(
         db,
-        7,
+        9,
         JSON.stringify(
           Object.assign({}, decisionData, {
             sleepPositions: sps,
-            shouldSleepWoMaskAlarmBePlayed: spAlarmRes,
+            shouldSleepPositionAlarmBePlayed: spAlarmRes,
           }),
         ),
       )
