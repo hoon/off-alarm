@@ -1488,6 +1488,8 @@ has been turned back on because the device power use is only checked every
 after any button event is received.
 */
 
+let sleepPositionAlarmEnabled = true
+
 async function main() {
   logger.info('Starting off-alarm')
   const influxdb = await getInfluxDb()
@@ -1630,13 +1632,15 @@ async function main() {
       await playToneOnDevice(mqttClient, 8)
     }
 
-    const spAlarmRes = await shouldSleepPositionAlarmBePlayed({
-      sleepPositions: sps,
-      refSec: nowSeconds,
-    })
+    const spAlarmRes = sleepPositionAlarmEnabled
+      ? await shouldSleepPositionAlarmBePlayed({
+          sleepPositions: sps,
+          refSec: nowSeconds,
+        })
+      : false
     logger.info(
       `alarm check interval: shouldSleepPositionAlarmBePlayed(): ` +
-        `${JSON.stringify(spAlarmRes)}; ` +
+        `${JSON.stringify(spAlarmRes)} (enabled=${sleepPositionAlarmEnabled}); ` +
         `sps: ${JSON.stringify(sps)}`,
     )
     if (spAlarmRes) {
@@ -1659,7 +1663,28 @@ async function main() {
     port: process.env.BUN_PORT ? Number.parseInt(process.env.BUN_PORT) : 3002,
     fetch: async (req) => {
       const url = new URL(req.url)
-      if (url.pathname === '/api/v1/button-events') {
+      if (url.pathname === '/api/v1/sleep-position-alarm') {
+        if (req.method === 'GET') {
+          const r = new Response(
+            JSON.stringify({ enabled: sleepPositionAlarmEnabled }),
+          )
+          r.headers.set('Content-Type', 'application/json; charset=utf-8')
+          return r
+        } else if (req.method === 'POST') {
+          const body = await req.json()
+          if (typeof body.enabled === 'boolean') {
+            sleepPositionAlarmEnabled = body.enabled
+            logger.info(
+              `sleep position alarm toggled: enabled=${sleepPositionAlarmEnabled}`,
+            )
+          }
+          const r = new Response(
+            JSON.stringify({ enabled: sleepPositionAlarmEnabled }),
+          )
+          r.headers.set('Content-Type', 'application/json; charset=utf-8')
+          return r
+        }
+      } else if (url.pathname === '/api/v1/button-events') {
         const beRes = await getButtonEvents(edb)
         const r = new Response(JSON.stringify(beRes))
         r.headers.set('Content-Type', 'application/json; charset=utf-8')
