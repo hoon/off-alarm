@@ -5,7 +5,6 @@ import mqtt from 'mqtt'
 import { z } from 'zod'
 import pino from 'pino'
 import { getVariancePop } from './statutils'
-import webFrontendPage from '../frontend/index.html'
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' })
 
@@ -969,8 +968,7 @@ async function getLatestButtonEvent(
       ORDER BY etime DESC LIMIT 1;
     `,
   )
-  stmt.run({ $sinceUnixTimestamp: sinceUnixTimestamp })
-  const rows = stmt.all()
+  const rows = stmt.all({ $sinceUnixTimestamp: sinceUnixTimestamp })
 
   if (rows.length < 1) {
     return null
@@ -1551,7 +1549,11 @@ async function main() {
   // bedside button/alarm module input events, either "awake" or "in_bed"
   await mqttClient.subscribeAsync(process.env.MQTT_TOPIC_BUTTONS_EVENT!)
   mqttClient.on('message', async (topic, payload) => {
-    if (topic === powerTopic) {
+    if (topic === process.env.MQTT_TOPIC_BUTTONS_EVENT!) {
+      const str = payload.toString()
+      logger.info(`MQTT receive: button event: ${str}`)
+      await insertButtonEvent(db, edb, mqttClient, str)
+    } else if (topic === powerTopic) {
       const str = payload.toString()
       logger.debug(`MQTT receive: device power: ${str}`)
       await insertDevicePowerReading(db, str)
@@ -1559,11 +1561,7 @@ async function main() {
       const str = payload.toString()
       logger.debug(`MQTT receive: env sensors: ${str}`)
       await insertIlluminanceSensorsReading(db, str)
-    } else if (topic === process.env.MQTT_TOPIC_BUTTONS_EVENT!) {
-      const str = payload.toString()
-      logger.info(`MQTT receive: button event: ${str}`)
-      await insertButtonEvent(db, edb, mqttClient, str)
-    } else if (topic === process.env.MQTT_TOPIC_SLEEP_POSITION!) {
+    } else if (topic === sleepPositionTopic) {
       /* Example MQTT sleep position message:
         {
           "position": "Empty",
