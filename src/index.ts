@@ -695,6 +695,10 @@ async function insertButtonEvent(
     (bert) => bert.eventName === evStr,
   )
   if (evtResponse) {
+    playToneOnDevice(mqttClient, evtResponse.responseTone).catch((err) =>
+      logger.warn(`insertButtonEvent(): playToneOnDevice error: ${err}`),
+    )
+
     const res = _db.prepare(
       'SELECT mtime, illuminance_lux, temp_c FROM illuminance ' +
         'ORDER BY mtime DESC ' +
@@ -745,7 +749,6 @@ async function insertButtonEvent(
         `insertButtonEvent(): database button_event insert error: ${err}`,
       )
     }
-    await playToneOnDevice(mqttClient, evtResponse.responseTone)
   }
 
   if (evStr === 'check_status') {
