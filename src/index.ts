@@ -1,5 +1,4 @@
-import { InfluxDB } from '@influxdata/influxdb-client'
-import { flux } from '@influxdata/influxdb-client'
+import { InfluxDB, flux } from '@influxdata/influxdb-client'
 import { Database } from 'bun:sqlite'
 import mqtt from 'mqtt'
 import { z } from 'zod'
@@ -18,7 +17,7 @@ async function getInfluxDb() {
     return influxdb
   } catch (err) {
     logger.error(`InfluxDB connection failed: ${err}`)
-    throw err
+    process.exit(-1)
   }
 }
 
@@ -39,6 +38,24 @@ const alarmEvent = z.object({
   atime: z.number(),
   tune_no: z.number(),
   decision_data: z.string(),
+})
+
+const devicePowerSensorReadingSchema = z.object({
+  StatusSNS: z.object({
+    Time: z.string(),
+    ENERGY: z.object({
+      TotalStartTime: z.string(),
+      Total: z.number(),
+      Yesterday: z.number(),
+      Today: z.number(),
+      Power: z.number(),
+      ApparentPower: z.number(),
+      ReactivePower: z.number(),
+      Factor: z.number(),
+      Voltage: z.number(),
+      Current: z.number(),
+    }),
+  }),
 })
 
 const DEVICE_POWER_ON_THRESHOLD_WATT: number = Number.parseFloat(
@@ -176,7 +193,7 @@ export async function getIlluminanceReadings(
 
         try {
           logger.debug(
-            `getIlluminanceReadings(): inserting {${o._time}, ${illuminanceLux}}}`,
+            `getIlluminanceReadings(): inserting {${o._time}, ${illuminanceLux}}`,
           )
           stmt.run({
             $mtime: o.unix_time,
@@ -403,7 +420,7 @@ export async function getDevicePowerStats(
  * 1722528237571 to calculate the dark/(all measurements) ratio.
  *
  * Returns:
- *  numDark: number of measuremens where it was dark
+ *  numDark: number of measurements where it was dark
  *  numAll: number of all measurements in the indicated time period
  *  darkRatio: numDark / numAll
  *  lastIlluminanceLux: the last illuminance measurement value in the time period
@@ -463,12 +480,12 @@ async function hasItBeenDark(
       const _r = rows[0] as any
       logger.debug(`hasItBeenDark(): query raw result: ${JSON.stringify(_r)}`)
       return {
-        numDark: parseInt(_r.num_dark),
-        numAll: parseInt(_r.num_all),
+        numDark: Number.parseInt(_r.num_dark),
+        numAll: Number.parseInt(_r.num_all),
         darkRatio: !Number.isNaN(_r.dark_ratio)
-          ? parseFloat(_r.dark_ratio)
+          ? Number.parseFloat(_r.dark_ratio)
           : null,
-        lastIlluminanceLux: parseFloat(_r.last_m_illuminance_lux),
+        lastIlluminanceLux: Number.parseFloat(_r.last_m_illuminance_lux),
       }
     }
   } catch (err) {
@@ -491,7 +508,7 @@ async function getAllIlluminance(_db: Database) {
     const rows = stmt.all()
     logger.info(`getAllIlluminance(): ${JSON.stringify(rows)}`)
   } catch (err) {
-    logger.error(`getAllIlluminance(): error retrievign from database: ${err}`)
+    logger.error(`getAllIlluminance(): error retrieving from database: ${err}`)
   }
 }
 
@@ -539,24 +556,6 @@ async function insertDevicePowerReading(
   devicePowerReadingStr: string,
 ) {
   const readObj = JSON.parse(devicePowerReadingStr)
-
-  const devicePowerSensorReadingSchema = z.object({
-    StatusSNS: z.object({
-      Time: z.string(),
-      ENERGY: z.object({
-        TotalStartTime: z.string(),
-        Total: z.number(),
-        Yesterday: z.number(),
-        Today: z.number(),
-        Power: z.number(),
-        ApparentPower: z.number(),
-        ReactivePower: z.number(),
-        Factor: z.number(),
-        Voltage: z.number(),
-        Current: z.number(),
-      }),
-    }),
-  })
 
   const k = await devicePowerSensorReadingSchema.safeParseAsync(readObj)
 
@@ -651,7 +650,7 @@ async function insertIlluminanceSensorsReading(
 }
 
 async function initButtonEventTables(_edb: Database) {
-  const ccpr = await _edb.run(
+  const ccpr = _edb.run(
     `CREATE TABLE IF NOT EXISTS button_event
       (
         etime INTEGER,
@@ -665,7 +664,7 @@ async function initButtonEventTables(_edb: Database) {
     `initButtonEventTables(): CREATE button_event table: ${JSON.stringify(ccpr)}`,
   )
 
-  const cidx = await _edb.run(
+  const cidx = _edb.run(
     `CREATE INDEX IF NOT EXISTS be_event_type_idx ON button_event(event_type);`,
   )
   logger.info(
@@ -765,7 +764,7 @@ async function insertButtonEvent(
 }
 
 async function initSleepPositionTables(_db: Database) {
-  const ccpr = await _db.run(
+  const ccpr = _db.run(
     `CREATE TABLE IF NOT EXISTS sleep_position
       (
         stime_sec INTEGER,
@@ -782,7 +781,7 @@ async function initSleepPositionTables(_db: Database) {
     `initSleepPositionTables(): CREATE sleep_position table: ${JSON.stringify(ccpr)}`,
   )
 
-  const cidx = await _db.run(
+  const cidx = _db.run(
     `CREATE INDEX IF NOT EXISTS sp_stime_sec_idx ON sleep_position(stime_sec);`,
   )
   logger.info(
@@ -791,7 +790,7 @@ async function initSleepPositionTables(_db: Database) {
 }
 
 async function initAlarmEventTable(_db: Database) {
-  const ccpr = await _db.run(
+  const ccpr = _db.run(
     `CREATE TABLE IF NOT EXISTS alarm_event
       (
         atime INTEGER, -- UNIX timestamp in milliseconds
@@ -804,7 +803,7 @@ async function initAlarmEventTable(_db: Database) {
     `initAlarmEventTable(): CREATE alarm_event table: ${JSON.stringify(ccpr)}`,
   )
 
-  const cidx = await _db.run(
+  const cidx = _db.run(
     `CREATE INDEX IF NOT EXISTS ae_atime_idx ON alarm_event(atime);`,
   )
   logger.info(
@@ -822,16 +821,17 @@ async function insertAlarmEvent(
       `VALUES ($atime, $tuneNo, $decisionDataStr);`,
   )
 
+  const _now = Date.now()
   try {
     logger.debug(
       `insertAlarmEvent(): inserting alarm_event: ${JSON.stringify({
-        atime: Date.now(),
+        atime: _now,
         tuneNo: tuneNo,
         decisionDataStr: decisionDataStr,
       })}`,
     )
     stmt.run({
-      $atime: Date.now(),
+      $atime: _now,
       $tuneNo: tuneNo,
       $decisionDataStr: decisionDataStr,
     })
@@ -924,7 +924,7 @@ async function insertSleepPosition(_db: Database, sleepPositionStr: string) {
 }
 
 async function getLatestIlluminanceReading(_db: Database) {
-  const res = await _db.prepare(
+  const res = _db.prepare(
     `SELECT mtime, illuminance_lux FROM illuminance ORDER BY mtime DESC LIMIT 1;`,
   )
   const rows = res.all()
@@ -937,7 +937,7 @@ async function getLatestIlluminanceReading(_db: Database) {
   const parseRes = await IlluminaceMeasurement.safeParseAsync(rows[0])
   if (parseRes.error) {
     logger.error(
-      'isItDarkRightNow(): illuminance reading parsing failed: ' +
+      'getLatestIlluminanceReading(): illuminance reading parsing failed: ' +
         parseRes.error,
     )
     return null
@@ -1085,7 +1085,7 @@ export interface DecisionData extends DevicePowerStats {
 function wasStatusChangePressedRecently(
   decisionData: DecisionData,
   recentMin: number = 10, // how many minutes after the button press should we not play an alarm
-) {
+): boolean {
   const now = Date.now()
   if (
     decisionData.lastButtonType &&
@@ -1105,8 +1105,8 @@ function wasStatusChangePressedRecently(
       )
       return true
     }
-    return false
   }
+  return false
 }
 
 async function getDecisionData(
@@ -1295,11 +1295,10 @@ async function getButtonEvents(
   const unixTimeMs = refTime === -1 ? Date.now() : refTime
 
   const stmt = _edb.prepare(sql)
-  stmt.run({
+  const res = stmt.all({
     $unixTimeMs: unixTimeMs,
     $forMs: forSec * 1000,
   })
-  const res = stmt.all()
 
   const buttonEventArray = z.array(buttonEvent)
 
@@ -1329,7 +1328,7 @@ function _isSleepPositionArrayAdequate({
   refSec: number
   sampleMinutes?: number
 }) {
-  if (!sleepPosition) {
+  if (!sleepPositions) {
     // invalid sleep positions array
     return false
   }
@@ -1447,11 +1446,10 @@ async function getAlarmEvents(
   const unixTimeMs = refTimeMs === -1 ? Date.now() : refTimeMs
 
   const stmt = _db.prepare(sql)
-  stmt.run({
+  const res = stmt.all({
     $unixTimeMs: unixTimeMs,
     $forMs: forSec * 1000,
   })
-  const res = stmt.all()
 
   const alarmEventArray = z.array(alarmEvent)
 
@@ -1478,7 +1476,7 @@ MAYBE: Perhaps the illuminance threshold should be adjusted so that alarm works
 during the early mornings when the sun has rose and the room isn't pitch black.
 Room light is about 21 lux, bedside light is about 42 lux, 8:30 AM in early August
 w/ curtains drawn is about 10 lux, 10:15 AM w/ one side of curtain open is 44 lux.
-We can't completley ignore illumiance since after 'in_bed' event, off-alarm
+We can't completely ignore illumiance since after 'in_bed' event, off-alarm
 sees if the illuminance is less than 20 lux to see if the light has been turned off,
 and the user actually intends to start sleeping as opposed to lying awake
 in bed with lights on.
