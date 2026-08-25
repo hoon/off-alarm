@@ -7,18 +7,12 @@ import { getVariancePop } from './statutils'
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' })
 
-async function getInfluxDb() {
-  try {
-    const influxdb = new InfluxDB({
-      url: process.env.INFLUX_URL!,
-      token: process.env.INFLUX_TOKEN!,
-    })
-
-    return influxdb
-  } catch (err) {
-    logger.error(`InfluxDB connection failed: ${err}`)
-    process.exit(-1)
-  }
+function getInfluxDb() {
+  // NOTE: the constructor does not connect; failures surface at query time.
+  return new InfluxDB({
+    url: process.env.INFLUX_URL!,
+    token: process.env.INFLUX_TOKEN!,
+  })
 }
 
 const buttonEvent = z.object({
@@ -34,11 +28,28 @@ enum ButtonEventType {
   UpFromBed = 30,
 }
 
+const BUTTON_EVENT_RESPONSES: {
+  eventName: string
+  eventType: ButtonEventType
+  responseTone: number
+}[] = [
+  { eventName: 'in_bed', eventType: ButtonEventType.InBed, responseTone: 1 },
+  { eventName: 'awake', eventType: ButtonEventType.Awake, responseTone: 3 },
+  {
+    eventName: 'up_from_bed',
+    eventType: ButtonEventType.UpFromBed,
+    responseTone: 5,
+  },
+]
+
 const alarmEvent = z.object({
   atime: z.number(),
   tune_no: z.number(),
   decision_data: z.string(),
 })
+
+const buttonEventListSchema = z.array(buttonEvent)
+const alarmEventListSchema = z.array(alarmEvent)
 
 const devicePowerSensorReadingSchema = z.object({
   StatusSNS: z.object({
@@ -62,13 +73,31 @@ const DEVICE_POWER_ON_THRESHOLD_WATT: number = Number.parseFloat(
   process.env.DEVICE_POWER_ON_THRESHOLD_WATT || '4',
 )
 
+const ILLUMINANCE_DARK_THRESHOLD_LUX: number = Number.parseFloat(
+  process.env.ILLUMINANCE_DARK_THRESHOLD_LUX || '17',
+)
 const DEVICE_POWER_VARIANCE_POP_THRESHOLD: number = Number.parseFloat(
   process.env.DEVICE_POWER_VARIANCE_POP_THRESHOLD || '3',
 )
 
-const ILLUMINANCE_DARK_THRESHOLD_LUX: number = Number.parseFloat(
-  process.env.ILLUMINANCE_DARK_THRESHOLD_LUX || '17',
-)
+const envSensorsReadingSchema = z.object({
+  StatusSNS: z.object({
+    Time: z.string(),
+    BME280: z.object({
+      Temperature: z.number(),
+      Humidity: z.number(),
+      DewPoint: z.number(),
+      Pressure: z.number(),
+    }),
+    TSL2561: z.object({
+      Illuminance: z.number(),
+      IR: z.number(),
+      Broadband: z.number(),
+    }),
+    PressureUnit: z.string(),
+    TempUnit: z.string(),
+  }),
+})
 
 function getFluxTimeRangeStr({
   forSec,
@@ -99,34 +128,29 @@ export async function getDevicePowerReadings(
     import "math"
     from(bucket:${process.env.INFLUX_DEVICE_POWER_BUCKET})
       |> ${timeRangeStr}
-      |> filter(fn: (r) => r._measurement == "${process.env.INFLUX_DEVICE_POWER_MEASUREMENT}")
+      |> filter(fn: (r) => r._measurement == ${process.env.INFLUX_DEVICE_POWER_MEASUREMENT})
       |> map(fn: (r) => ({_time: r._time, _value: r._value, unix_time: uint(v: r._time) / uint(v: 1000000)}))
   `
 
   const powerWattReadings: { time: number; powerWatt: number }[] = []
+  const insertDevicePowerStmt = _db.prepare(
+    `INSERT INTO device_power (mtime, power_watt) VALUES ($mtime, $powerWatt);`,
+  )
 
   return await new Promise((resolve, reject) => {
     queryApi.queryRows(fluxQuery, {
       next(row, tableMeta) {
         const o = tableMeta.toObject(row)
 
-        // console.log(o)
-        // console.log(row)
-        // console.log('')
         const time = Date.parse(o._time)
         const powerWatt = o._value
-        if (powerWatt == undefined || powerWatt == null) {
+        if (powerWatt == null) {
           return
         }
         powerWattReadings.push({ time, powerWatt })
 
-        const stmt = _db.prepare(
-          `INSERT INTO device_power (mtime, power_watt) ` +
-            `VALUES ($mtime, $powerWatt);`,
-        )
-
         try {
-          stmt.run({ $mtime: time, $powerWatt: powerWatt })
+          insertDevicePowerStmt.run({ $mtime: time, $powerWatt: powerWatt })
         } catch (err) {
           logger.warn(
             `getDevicePowerReadings(): device_power table insert error: ${err}, values ${JSON.stringify(
@@ -158,9 +182,9 @@ export async function getIlluminanceReadings(
   const timeRangeStr = getFluxTimeRangeStr({ forSec, untilTime })
   const fluxQuery = flux`
     import "math"
-    from(bucket:"${process.env.INFLUX_ENV_READINGS_BUCKET!}")
+    from(bucket:${process.env.INFLUX_ENV_READINGS_BUCKET!})
       |> ${timeRangeStr}
-      |> filter(fn: (r) => r._measurement == "${process.env.INFLUX_ENV_READINGS_MEASUREMENT}")
+      |> filter(fn: (r) => r._measurement == ${process.env.INFLUX_ENV_READINGS_MEASUREMENT})
       |> filter(fn: (r) => r._field == "illuminance_lux" or r._field == "temp_c")
       |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
       |> map(fn: (r) => ({r with unix_time: uint(v: r._time) / uint(v: 1000000)}))
@@ -169,33 +193,31 @@ export async function getIlluminanceReadings(
   const illuminanceReadings: {
     time: number
     illuminanceLux: number
-    tempC: number
+    tempC: number | null
   }[] = []
+  const insertIlluminanceStmt = _db.prepare(
+    `INSERT INTO illuminance (mtime, illuminance_lux, temp_c) VALUES ($mtime, $illuminanceLux, $tempC);`,
+  )
   return await new Promise((resolve, reject) => {
     queryApi.queryRows(fluxQuery, {
       next(row, tableMeta) {
         const o = tableMeta.toObject(row)
         const illuminanceLux = o.illuminance_lux
-        if (illuminanceLux == undefined || illuminanceLux == null) {
+        if (illuminanceLux == null) {
           return
         }
         const tempC = o.temp_c
         illuminanceReadings.push({
           time: o.unix_time,
           illuminanceLux,
-          tempC,
+          tempC: tempC ?? null,
         })
-
-        const stmt = _db.prepare(
-          `INSERT INTO illuminance (mtime, illuminance_lux, temp_c) ` +
-            `VALUES ($mtime, $illuminanceLux, $tempC);`,
-        )
 
         try {
           logger.debug(
             `getIlluminanceReadings(): inserting {${o._time}, ${illuminanceLux}}`,
           )
-          stmt.run({
+          insertIlluminanceStmt.run({
             $mtime: o.unix_time,
             $illuminanceLux: illuminanceLux,
             $tempC: tempC,
@@ -281,7 +303,7 @@ async function hasDeviceBeenOff(_db: Database, forSec: number = 300) {
     SELECT
         off_m.num_device_off,
         all_m.num_all,
-        off_m.num_device_off / all_m.num_all AS off_ratio,
+        CAST(off_m.num_device_off AS REAL) / all_m.num_all AS off_ratio,
         avg_m.avg_power_watt,
         last_m.last_m_power_watt
       FROM off_m, all_m, avg_m, last_m
@@ -395,10 +417,8 @@ export async function getDevicePowerStats(
     return null
   }
 
-  for (const [_, value] of Object.entries(stats)) {
-    if (value === undefined) {
-      return null
-    }
+  if (Object.values(stats).some((v) => v === undefined)) {
+    return null
   }
   return stats as DevicePowerStats
 }
@@ -437,7 +457,7 @@ async function hasItBeenDark(
 ) {
   const countDarkVsAllSql = `
     WITH
-      off_m AS (
+      dark_m AS (
         SELECT COUNT(*) AS num_dark
           FROM illuminance
           WHERE mtime >= $mtime - $forMs
@@ -453,15 +473,17 @@ async function hasItBeenDark(
       last_m AS (
         SELECT illuminance_lux AS last_m_illuminance_lux
           FROM illuminance
+          WHERE mtime >= $mtime - $forMs
+          AND mtime <= $mtime
           ORDER BY mtime DESC
           LIMIT 1
       )
     SELECT
-        off_m.num_dark,
+        dark_m.num_dark,
         all_m.num_all,
-        CAST(off_m.num_dark AS REAL) / all_m.num_all AS dark_ratio,
+        CAST(dark_m.num_dark AS REAL) / all_m.num_all AS dark_ratio,
         last_m.last_m_illuminance_lux
-      FROM off_m, all_m, last_m
+      FROM dark_m, all_m, last_m
     ;`
 
   const mtime = Math.floor(refTime === -1 ? Date.now() : refTime)
@@ -555,7 +577,15 @@ async function insertDevicePowerReading(
   _db: Database,
   devicePowerReadingStr: string,
 ) {
-  const readObj = JSON.parse(devicePowerReadingStr)
+  let readObj: unknown
+  try {
+    readObj = JSON.parse(devicePowerReadingStr)
+  } catch (err) {
+    logger.warn(
+      `insertDevicePowerReading(): payload is not valid JSON: ${err}; payload: ${devicePowerReadingStr}`,
+    )
+    return
+  }
 
   const k = await devicePowerSensorReadingSchema.safeParseAsync(readObj)
 
@@ -594,26 +624,15 @@ async function insertIlluminanceSensorsReading(
   _db: Database,
   envSensorsReadingStr: string,
 ) {
-  const readObj = JSON.parse(envSensorsReadingStr)
-
-  const envSensorsReadingSchema = z.object({
-    StatusSNS: z.object({
-      Time: z.string(),
-      BME280: z.object({
-        Temperature: z.number(),
-        Humidity: z.number(),
-        DewPoint: z.number(),
-        Pressure: z.number(),
-      }),
-      TSL2561: z.object({
-        Illuminance: z.number(),
-        IR: z.number(),
-        Broadband: z.number(),
-      }),
-      PressureUnit: z.string(),
-      TempUnit: z.string(),
-    }),
-  })
+  let readObj: unknown
+  try {
+    readObj = JSON.parse(envSensorsReadingStr)
+  } catch (err) {
+    logger.warn(
+      `insertIlluminanceSensorsReading(): payload is not valid JSON: ${err}; payload: ${envSensorsReadingStr}`,
+    )
+    return
+  }
 
   const k = await envSensorsReadingSchema.safeParseAsync(readObj)
 
@@ -679,23 +698,17 @@ async function insertButtonEvent(
   buttonEventStr: string,
 ) {
   const evStr = buttonEventStr.trim()
-  const stmt = _edb.prepare(
-    `INSERT INTO button_event (etime, event_type, temp_c, illuminance_lux) ` +
-      `VALUES ($etime, $eventType, $tempC, $illuminanceLux);`,
-  )
-
-  const buttonEventResponse = [
-    { eventName: 'in_bed', eventType: 10, responseTone: 1 },
-    { eventName: 'awake', eventType: 20, responseTone: 3 },
-    { eventName: 'up_from_bed', eventType: 30, responseTone: 5 },
-  ]
-
-  const evtResponse = buttonEventResponse.find(
+  const evtResponse = BUTTON_EVENT_RESPONSES.find(
     (bert) => bert.eventName === evStr,
   )
   if (evtResponse) {
     playToneOnDevice(mqttClient, evtResponse.responseTone).catch((err) =>
       logger.warn(`insertButtonEvent(): playToneOnDevice error: ${err}`),
+    )
+
+    const stmt = _edb.prepare(
+      `INSERT INTO button_event (etime, event_type, temp_c, illuminance_lux) ` +
+        `VALUES ($etime, $eventType, $tempC, $illuminanceLux);`,
     )
 
     const res = _db.prepare(
@@ -713,14 +726,14 @@ async function insertButtonEvent(
       )
       const latestEnv = rows[0] as any
       if (Number.isFinite(latestEnv.temp_c)) {
-        tempC = parseFloat(latestEnv.temp_c)
+        tempC = latestEnv.temp_c
       } else {
         logger.info(
           `insertButtonEvent(): temp_c is not a finite number: ${latestEnv.temp_c}`,
         )
       }
       if (Number.isFinite(latestEnv.illuminance_lux)) {
-        illuminanceLux = parseFloat(latestEnv.illuminance_lux)
+        illuminanceLux = latestEnv.illuminance_lux
       } else {
         logger.info(
           `insertButtonEvent(): illuminance_lux is not a finite number: ${latestEnv.illuminance_lux}`,
@@ -728,17 +741,18 @@ async function insertButtonEvent(
       }
     }
 
+    const etime = Date.now()
     try {
       logger.debug(
         `insertButtonEvent(): inserting button_event: ${JSON.stringify({
-          etime: Date.now(),
+          etime,
           eventType: evtResponse.eventType,
           tempC,
           illuminanceLux,
         })}`,
       )
       stmt.run({
-        $etime: Date.now(),
+        $etime: etime,
         $eventType: evtResponse.eventType,
         $tempC: tempC,
         $illuminanceLux: illuminanceLux,
@@ -753,7 +767,7 @@ async function insertButtonEvent(
   if (evStr === 'check_status') {
     const latestButtonEvent = await getLatestButtonEvent(_edb)
     if (latestButtonEvent) {
-      const er = buttonEventResponse.find(
+      const er = BUTTON_EVENT_RESPONSES.find(
         (r) => r.eventType === latestButtonEvent.event_type,
       )
       if (er) {
@@ -843,19 +857,22 @@ async function insertAlarmEvent(
 async function insertSleepPosition(_db: Database, sleepPositionStr: string) {
   // expect sleepPositionStr in form of JSON
   // timestamp is in seconds, not milliseconds
-  const sleepPositionResponseSchema = z.object({
-    position: z.string(),
-    position_confidence: z.number(),
-    sleep_status: z.string(),
-    sleep_status_confidence: z.number(),
-    mask_status: z.string(),
-    mask_status_confidence: z.number(),
+  const sleepPositionReadingSchema = sleepPosition.extend({
     timestamp: z.number(),
   })
 
-  const parsedSleepPosition = await sleepPositionResponseSchema.safeParseAsync(
-    JSON.parse(sleepPositionStr),
-  )
+  let readObj: unknown
+  try {
+    readObj = JSON.parse(sleepPositionStr)
+  } catch (err) {
+    logger.warn(
+      `insertSleepPosition(): payload is not valid JSON: ${err}; payload: ${sleepPositionStr}`,
+    )
+    return
+  }
+
+  const parsedSleepPosition =
+    await sleepPositionReadingSchema.safeParseAsync(readObj)
   if (parsedSleepPosition.error) {
     logger.warn(
       `insertSleepPosition(): sleep_position string parse failed: ${sleepPositionStr}; ` +
@@ -928,9 +945,12 @@ async function getLatestIlluminanceReading(_db: Database) {
     `SELECT mtime, illuminance_lux FROM illuminance ORDER BY mtime DESC LIMIT 1;`,
   )
   const rows = res.all()
+  if (rows.length === 0) {
+    return null
+  }
 
   const IlluminaceMeasurement = z.object({
-    mtime: z.date(),
+    mtime: z.number(),
     illuminance_lux: z.number(),
   })
 
@@ -1088,23 +1108,17 @@ function wasStatusChangePressedRecently(
 ): boolean {
   const now = Date.now()
   if (
-    decisionData.lastButtonType &&
-    [
-      ButtonEventType.InBed,
-      ButtonEventType.Awake,
-      ButtonEventType.UpFromBed,
-    ].includes(decisionData.lastButtonType)
+    decisionData.lastButtonType == null ||
+    decisionData.lastButtonTime == null
   ) {
-    if (!decisionData.lastButtonTime) {
-      logger.info('InBed button was pressed but lastButtonTime is undefined')
-      return false
-    }
-    if (now - decisionData.lastButtonTime < recentMin * 60 * 1000) {
-      logger.info(
-        'InBed button was pressed very recently, the sleeper is likely adjusting',
-      )
-      return true
-    }
+    return false
+  }
+
+  if (now - decisionData.lastButtonTime < recentMin * 60 * 1000) {
+    logger.info(
+      'Status-change button pressed very recently, the sleeper is likely adjusting',
+    )
+    return true
   }
   return false
 }
@@ -1129,12 +1143,13 @@ async function getDecisionData(
     `getDecisionData(): now = ${now}, sinceUnixTimestamp = ${sinceUnixTimestamp}`,
   )
 
-  const latestButtonEvent = await getLatestButtonEvent(_edb, {
-    sinceUnixTimestamp: sinceUnixTimestamp,
-  }) // in_bed within the last 14 hours
-  const darkInfo = await hasItBeenDark(_db, { refTime: now })
-  const devicePowerInfo = await hasDeviceBeenOff(_db)
-  const devicePowerStats = await getDevicePowerStats(_db)
+  const [latestButtonEvent, darkInfo, devicePowerInfo, devicePowerStats] =
+    await Promise.all([
+      getLatestButtonEvent(_edb, { sinceUnixTimestamp }), // in_bed within the last 14 hours
+      hasItBeenDark(_db, { refTime: now }),
+      hasDeviceBeenOff(_db),
+      getDevicePowerStats(_db),
+    ])
 
   const decisionData = {
     lastButtonType: latestButtonEvent?.event_type,
@@ -1199,8 +1214,8 @@ async function shouldAlarmBePlayed({
   }
 
   if (
-    decisionData.offRatio &&
-    decisionData.lastWatt &&
+    decisionData.offRatio != null &&
+    decisionData.lastWatt != null &&
     (decisionData.offRatio <= 0.95 ||
       decisionData.lastWatt >= DEVICE_POWER_ON_THRESHOLD_WATT)
   ) {
@@ -1211,9 +1226,9 @@ async function shouldAlarmBePlayed({
   }
 
   if (
-    decisionData.powerWattAvg &&
-    decisionData.numReadings &&
-    decisionData.powerWattVarPop
+    decisionData.powerWattAvg != null &&
+    decisionData.numReadings != null &&
+    decisionData.powerWattVarPop != null
   ) {
     // power use is definitely above the maximum level seen during stand-by
     // using the average has the effect of delaying the alarm,
@@ -1248,7 +1263,7 @@ async function shouldAlarmBePlayed({
     return false
   }
 
-  if (decisionData.darkRatio && decisionData.darkRatio > 0.95) {
+  if (decisionData.darkRatio != null && decisionData.darkRatio > 0.95) {
     logger.debug(`shouldAlarmBePlayed(): illuminance is below threshold`)
     return true
   }
@@ -1300,9 +1315,7 @@ async function getButtonEvents(
     $forMs: forSec * 1000,
   })
 
-  const buttonEventArray = z.array(buttonEvent)
-
-  const parseRes = await buttonEventArray.safeParseAsync(res)
+  const parseRes = await buttonEventListSchema.safeParseAsync(res)
 
   if (parseRes.error) {
     logger.warn(
@@ -1451,9 +1464,7 @@ async function getAlarmEvents(
     $forMs: forSec * 1000,
   })
 
-  const alarmEventArray = z.array(alarmEvent)
-
-  const parseRes = await alarmEventArray.safeParseAsync(res)
+  const parseRes = await alarmEventListSchema.safeParseAsync(res)
 
   if (parseRes.error) {
     logger.warn(
@@ -1486,6 +1497,13 @@ has been turned back on because the device power use is only checked every
 30 seconds. Perhaps a way to get around this is to suspend alarm for 30 seconds
 after any button event is received.
 */
+
+function jsonResponse(body: unknown) {
+  // Shared by every JSON endpoint so serialization and content type stay in lockstep.
+  return new Response(JSON.stringify(body), {
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+  })
+}
 
 let sleepPositionAlarmEnabled = true
 
@@ -1549,7 +1567,7 @@ async function main() {
 
   // bedside button/alarm module input events, either "awake" or "in_bed"
   await mqttClient.subscribeAsync(process.env.MQTT_TOPIC_BUTTONS_EVENT!)
-  mqttClient.on('message', async (topic, payload) => {
+  const handleMqttMessage = async (topic: string, payload: Buffer) => {
     if (topic === process.env.MQTT_TOPIC_BUTTONS_EVENT!) {
       const str = payload.toString()
       logger.info(`MQTT receive: button event: ${str}`)
@@ -1578,9 +1596,14 @@ async function main() {
       logger.info(`MQTT receive: sleep position: ${str}`)
       await insertSleepPosition(db, str)
     }
+  }
+  mqttClient.on('message', (topic, payload) => {
+    handleMqttMessage(topic, payload).catch((err) =>
+      logger.error(`MQTT message handler failed for ${topic}: ${err}`),
+    )
   })
 
-  setInterval(async () => {
+  const runAlarmCycle = async () => {
     const decisionData = await getDecisionData(db, edb)
 
     if (wasStatusChangePressedRecently(decisionData)) {
@@ -1653,10 +1676,16 @@ async function main() {
           }),
         ),
       )
-      logger.info(`playing alarm tone #9 (sleeping in bad position))`)
+      logger.info(`playing alarm tone #9 (sleeping in bad position)`)
       await playToneOnDevice(mqttClient, 9)
     }
-  }, 13000) // 13 seconds because the Reveille (tune #8) takes about 12 seconds to play
+  }
+
+  setInterval(() => {
+    runAlarmCycle().catch((err) =>
+      logger.error(`alarm check interval failed: ${err}`),
+    )
+  }, 13_000) // Reveille (tune #8) takes about 12 seconds to play
 
   const webServer = Bun.serve({
     port: process.env.BUN_PORT ? Number.parseInt(process.env.BUN_PORT) : 3002,
@@ -1664,11 +1693,7 @@ async function main() {
       const url = new URL(req.url)
       if (url.pathname === '/api/v1/sleep-position-alarm') {
         if (req.method === 'GET') {
-          const r = new Response(
-            JSON.stringify({ enabled: sleepPositionAlarmEnabled }),
-          )
-          r.headers.set('Content-Type', 'application/json; charset=utf-8')
-          return r
+          return jsonResponse({ enabled: sleepPositionAlarmEnabled })
         } else if (req.method === 'POST') {
           const body = await req.json()
           if (typeof body.enabled === 'boolean') {
@@ -1677,30 +1702,23 @@ async function main() {
               `sleep position alarm toggled: enabled=${sleepPositionAlarmEnabled}`,
             )
           }
-          const r = new Response(
-            JSON.stringify({ enabled: sleepPositionAlarmEnabled }),
-          )
-          r.headers.set('Content-Type', 'application/json; charset=utf-8')
-          return r
+          return jsonResponse({ enabled: sleepPositionAlarmEnabled })
         }
       } else if (url.pathname === '/api/v1/button-events') {
-        const beRes = await getButtonEvents(edb)
-        const r = new Response(JSON.stringify(beRes))
-        r.headers.set('Content-Type', 'application/json; charset=utf-8')
-        return r
+        return jsonResponse(await getButtonEvents(edb))
       } else if (url.pathname === '/api/v1/alarm-events') {
-        const aeRes = await getAlarmEvents(db)
-        const r = new Response(JSON.stringify(aeRes))
-        r.headers.set('Content-Type', 'application/json; charset=utf-8')
-        return r
+        return jsonResponse(await getAlarmEvents(db))
       } else if (url.pathname === '/') {
-        const r = new Response(Bun.file('./frontend/dist/index.html'))
-        r.headers.set('Content-Type', 'Content-Type: text/html; charset=utf-8')
-        return r
+        const indexFile = Bun.file('./frontend/dist/index.html')
+        if (await indexFile.exists()) {
+          const r = new Response(indexFile)
+          r.headers.set('Content-Type', 'text/html; charset=utf-8')
+          return r
+        }
       } else if (url.pathname.startsWith('/assets/')) {
         const filename = url.pathname.split('/').pop()
-        try {
-          const assetFile = Bun.file(`./frontend/dist/assets/${filename}`)
+        const assetFile = Bun.file(`./frontend/dist/assets/${filename}`)
+        if (await assetFile.exists()) {
           const r = new Response(assetFile)
           if (filename?.endsWith('.js')) {
             r.headers.set(
@@ -1711,10 +1729,8 @@ async function main() {
             r.headers.set('Content-Type', 'text/css;charset=utf-8')
           }
           return r
-        } catch (error) {
-          const r = new Response('404')
-          return r
         }
+        return new Response('404 Not Found', { status: 404 })
       }
       return new Response('Hello world!')
     },
@@ -1724,7 +1740,10 @@ async function main() {
 }
 
 if (require.main === module) {
-  main()
+  main().catch((err) => {
+    logger.error(`fatal error starting off-alarm: ${err}`)
+    process.exit(1)
+  })
 }
 
 // Export internal functions and types for testing purposes only
