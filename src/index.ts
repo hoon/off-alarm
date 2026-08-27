@@ -1753,5 +1753,7 @@ export const _TESTING =
         shouldAlarmBePlayed,
         shouldSleepPositionAlarmBePlayed,
         ButtonEventType,
+        insertSleepPosition,
+        initSleepPositionTables
       }
     : undefined
