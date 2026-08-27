@@ -272,7 +272,7 @@ export async function initSqliteTables(_db: Database) {
 }
 
 // TODO: make it accept refTime to allow for testing on example data set
-async function hasDeviceBeenOff(_db: Database, forSec: number = 300) {
+async function getDevicePowerInfo(_db: Database, forSec: number = 300) {
   const countOffVsAllSql = `
     WITH
       off_m AS (
@@ -1147,7 +1147,7 @@ async function getDecisionData(
     await Promise.all([
       getLatestButtonEvent(_edb, { sinceUnixTimestamp }), // in_bed within the last 14 hours
       hasItBeenDark(_db, { refTime: now }),
-      hasDeviceBeenOff(_db),
+      getDevicePowerInfo(_db),
       getDevicePowerStats(_db),
     ])
 
@@ -1165,7 +1165,7 @@ async function getDecisionData(
   return decisionData as DecisionData
 }
 
-async function shouldAlarmBePlayed({
+async function shouldMachineOffAlarmBePlayed({
   decisionData,
   now: _now = -1,
 }: {
@@ -1613,7 +1613,7 @@ async function main() {
       return
     }
 
-    const alarmRes = await shouldAlarmBePlayed({ decisionData })
+    const alarmRes = await shouldMachineOffAlarmBePlayed({ decisionData })
     logger.info(
       `alarm check interval: shouldAlarmBePlayed(): ${JSON.stringify(alarmRes)}; ` +
         `decisionData: ${JSON.stringify(decisionData)}`,
@@ -1750,7 +1750,7 @@ if (require.main === module) {
 export const _TESTING =
   process.env.NODE_ENV === 'test'
     ? {
-        shouldAlarmBePlayed,
+        shouldAlarmBePlayed: shouldMachineOffAlarmBePlayed,
         shouldSleepPositionAlarmBePlayed,
         ButtonEventType,
         insertSleepPosition,
