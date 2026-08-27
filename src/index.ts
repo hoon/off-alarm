@@ -857,7 +857,7 @@ async function insertAlarmEvent(
 async function insertSleepPosition(_db: Database, sleepPositionStr: string) {
   // expect sleepPositionStr in form of JSON
   // timestamp is in seconds, not milliseconds
-  const sleepPositionReadingSchema = sleepPosition.extend({
+  const sleepPositionReadingSchema = sleepPosition.omit({ stime_sec: true }).extend({
     timestamp: z.number(),
   })
 
