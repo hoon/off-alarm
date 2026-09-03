@@ -1,4 +1,4 @@
-import { InfluxDB, flux } from '@influxdata/influxdb-client'
+﻿import { InfluxDB, flux } from '@influxdata/influxdb-client'
 import { Database } from 'bun:sqlite'
 import mqtt from 'mqtt'
 import { z } from 'zod'
@@ -857,9 +857,11 @@ async function insertAlarmEvent(
 async function insertSleepPosition(_db: Database, sleepPositionStr: string) {
   // expect sleepPositionStr in form of JSON
   // timestamp is in seconds, not milliseconds
-  const sleepPositionReadingSchema = sleepPosition.omit({ stime_sec: true }).extend({
-    timestamp: z.number(),
-  })
+  const sleepPositionReadingSchema = sleepPosition
+    .omit({ stime_sec: true })
+    .extend({
+      timestamp: z.number(),
+    })
 
   let readObj: unknown
   try {
@@ -1506,6 +1508,7 @@ function jsonResponse(body: unknown) {
 }
 
 let sleepPositionAlarmEnabled = true
+let sleepPositionAlarmToleranceMinutes = 10
 
 async function main() {
   logger.info('Starting off-alarm')
@@ -1658,6 +1661,7 @@ async function main() {
       ? await shouldSleepPositionAlarmBePlayed({
           sleepPositions: sps,
           refSec: nowSeconds,
+          sampleMinutes: sleepPositionAlarmToleranceMinutes,
         })
       : false
     logger.info(
@@ -1693,7 +1697,10 @@ async function main() {
       const url = new URL(req.url)
       if (url.pathname === '/api/v1/sleep-position-alarm') {
         if (req.method === 'GET') {
-          return jsonResponse({ enabled: sleepPositionAlarmEnabled })
+          return jsonResponse({
+            enabled: sleepPositionAlarmEnabled,
+            toleranceMinutes: sleepPositionAlarmToleranceMinutes,
+          })
         } else if (req.method === 'POST') {
           const body = await req.json()
           if (typeof body.enabled === 'boolean') {
@@ -1702,7 +1709,19 @@ async function main() {
               `sleep position alarm toggled: enabled=${sleepPositionAlarmEnabled}`,
             )
           }
-          return jsonResponse({ enabled: sleepPositionAlarmEnabled })
+          if (
+            typeof body.toleranceMinutes === 'number' &&
+            body.toleranceMinutes > 0
+          ) {
+            sleepPositionAlarmToleranceMinutes = body.toleranceMinutes
+            logger.info(
+              `sleep position alarm tolerance set: ${sleepPositionAlarmToleranceMinutes} min`,
+            )
+          }
+          return jsonResponse({
+            enabled: sleepPositionAlarmEnabled,
+            toleranceMinutes: sleepPositionAlarmToleranceMinutes,
+          })
         }
       } else if (url.pathname === '/api/v1/button-events') {
         return jsonResponse(await getButtonEvents(edb))
@@ -1754,6 +1773,6 @@ export const _TESTING =
         shouldSleepPositionAlarmBePlayed,
         ButtonEventType,
         insertSleepPosition,
-        initSleepPositionTables
+        initSleepPositionTables,
       }
     : undefined
