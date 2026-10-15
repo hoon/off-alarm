@@ -9,7 +9,7 @@ interface AlarmEvent {
 function tuneNumberToText(tuneNo: number) {
   switch (tuneNo) {
     case 7:
-      return 'Tune 7 (Sleeping w/ machine off)'
+      return 'Tune 7 (Machine off)'
     case 9:
       return 'Tune 9 (Bad sleep position)'
     default:
@@ -20,59 +20,56 @@ function tuneNumberToText(tuneNo: number) {
 function AlarmEventRow({ ae }: { ae: AlarmEvent }) {
   const [isExpanded, setIsExpanded] = useState(false)
 
-  const { lastWatt, darkRatio, formattedJson } = useMemo(() => {
+  const { lastWatt, formattedJson } = useMemo(() => {
     let lastWatt: number | undefined
-    let darkRatio: number | undefined
     let formattedJson = ''
     try {
       const parsedData = JSON.parse(ae.decision_data)
       if (parsedData && typeof parsedData.lastWatt === 'number') {
         lastWatt = parsedData.lastWatt
       }
-      if (parsedData && typeof parsedData.darkRatio === 'number') {
-        darkRatio = parsedData.darkRatio
-      }
       formattedJson = JSON.stringify(parsedData, null, 2)
     } catch (e) {
       formattedJson = ae.decision_data
     }
-    return { lastWatt, darkRatio, formattedJson }
+    return { lastWatt, formattedJson }
   }, [ae.decision_data])
 
   return (
-    <div className="alarm-event-container">
-      <div className="button-event alarm-event">
-        <div className="button-event-date">
+    <tbody className="border-t border-slate-100 dark:border-slate-800">
+      <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
+        <td className="px-4 py-3 font-mono whitespace-nowrap">
           {new Date(ae.atime).toISOString().split('T')[0]}
-        </div>
-        <div className="button-event-time">
+        </td>
+        <td className="px-4 py-3 font-mono whitespace-nowrap">
           {new Date(ae.atime).toLocaleTimeString()}
-        </div>
-        <div className="button-event-type">{tuneNumberToText(ae.tune_no)}</div>
-        <div className="button-event-temp">
+        </td>
+        <td className="px-4 py-3">
+          {tuneNumberToText(ae.tune_no)}
+        </td>
+        <td className="px-4 py-3 text-right font-mono whitespace-nowrap">
           {lastWatt != null ? `${lastWatt.toFixed(1)} W` : ''}
-        </div>
-        <div className="button-event-lux">
-          {darkRatio != null ? `${(darkRatio * 100).toFixed(0)}%` : ''}
-        </div>
-        <div className="alarm-event-toggle">
+        </td>
+        <td className="px-4 py-3 text-right">
           <button
-            className="json-toggle-button"
+            className="cursor-pointer rounded-md border border-indigo-200 px-2 py-1 text-xs font-medium text-indigo-600 transition-colors hover:bg-indigo-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 dark:border-indigo-800 dark:text-indigo-400 dark:hover:bg-indigo-950"
             onClick={() => setIsExpanded(!isExpanded)}
             aria-expanded={isExpanded}
           >
             {isExpanded ? 'Hide' : 'JSON'}
           </button>
-        </div>
-      </div>
+        </td>
+      </tr>
       {isExpanded && (
-        <div className="decision-data-detail">
-          <pre>
-            <code>{formattedJson}</code>
-          </pre>
-        </div>
+        <tr>
+          <td colSpan={5} className="px-4 pb-4">
+            <pre className="max-w-0 min-w-full rounded-lg border border-slate-200 bg-slate-50 p-4 font-mono text-xs break-all whitespace-pre-wrap text-slate-700 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300">
+              <code>{formattedJson}</code>
+            </pre>
+          </td>
+        </tr>
       )}
-    </div>
+    </tbody>
   )
 }
 
@@ -90,22 +87,42 @@ export default function AlarmEvents() {
   }
 
   return !aEvents || aEvents.length < 1 ? (
-    <div>No events</div>
+    <div className="px-5 py-8 text-center text-sm text-slate-500 dark:text-slate-400">
+      No events
+    </div>
   ) : (
-    <>
-      <div className="button-event alarm-event button-event-header">
-        <div className="button-event-date">Date</div>
-        <div className="button-event-time">Time</div>
-        <div className="button-event-type">Alarm</div>
-        <div className="button-event-temp">Power</div>
-        <div className="button-event-lux">Dark ratio</div>
-        <div className="alarm-event-toggle">Data</div>
-      </div>
-      {aEvents.map((ae) => {
-        const eventKey =
-          typeof ae.atime === 'number' ? ae.atime : new Date(ae.atime).getTime()
-        return <AlarmEventRow key={eventKey} ae={ae} />
-      })}
-    </>
+    <div className="overflow-x-auto">
+      <table
+        aria-labelledby="alarm-events-heading"
+        className="w-full text-left text-sm"
+      >
+        <thead className="bg-slate-50 text-xs font-semibold tracking-wide text-slate-500 uppercase dark:bg-slate-800/50 dark:text-slate-400">
+          <tr>
+            <th scope="col" className="px-4 py-3">
+              Date
+            </th>
+            <th scope="col" className="px-4 py-3">
+              Time
+            </th>
+            <th scope="col" className="px-4 py-3">
+              Alarm
+            </th>
+            <th scope="col" className="px-4 py-3 text-right">
+              Power
+            </th>
+            <th scope="col" className="px-4 py-3 text-right">
+              Data
+            </th>
+          </tr>
+        </thead>
+        {aEvents.map((ae) => {
+          const eventKey =
+            typeof ae.atime === 'number'
+              ? ae.atime
+              : new Date(ae.atime).getTime()
+          return <AlarmEventRow key={eventKey} ae={ae} />
+        })}
+      </table>
+    </div>
   )
 }

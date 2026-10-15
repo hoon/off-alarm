@@ -34,39 +34,61 @@ export default function ButtonEvents() {
   }
 
   return !bEvents || bEvents.length < 1 ? (
-    <div>No events</div>
+    <div className="px-5 py-8 text-center text-sm text-slate-500 dark:text-slate-400">
+      No events
+    </div>
   ) : (
-    <>
-      <div className="button-event button-event-header">
-        <div className="button-event-date">Date</div>
-        <div className="button-event-time">Time</div>
-        <div className="button-event-type">Event</div>
-        <div className="button-event-temp">Temp</div>
-        <div className="button-event-lux">Lux</div>
-      </div>
-      {bEvents.map((be) => (
-        <div className="button-event" key={be.etime}>
-          <div className="button-event-date">
-            {new Date(be.etime).toISOString().split('T')[0]}
-          </div>
-          <div className="button-event-time">
-            {new Date(be.etime).toLocaleTimeString()}
-          </div>
-          <div className="button-event-type">
-            {eventTypeNumberToText(be.event_type)}
-          </div>
-          {be.temp_c != null && (
-            <div className="button-event-temp">
-              {be.temp_c.toFixed(1)} &deg;C
-            </div>
-          )}
-          {be.illuminance_lux && (
-            <div className="button-event-lux">
-              {be.illuminance_lux.toFixed(1)} lx
-            </div>
-          )}
-        </div>
-      ))}
-    </>
+    <div className="overflow-x-auto">
+      <table
+        aria-labelledby="button-events-heading"
+        className="w-full text-left text-sm"
+      >
+        <thead className="bg-slate-50 text-xs font-semibold tracking-wide text-slate-500 uppercase dark:bg-slate-800/50 dark:text-slate-400">
+          <tr>
+            <th scope="col" className="px-4 py-3">
+              Date
+            </th>
+            <th scope="col" className="px-4 py-3">
+              Time
+            </th>
+            <th scope="col" className="px-4 py-3">
+              Event
+            </th>
+            <th scope="col" className="px-4 py-3 text-right">
+              Temp
+            </th>
+            <th scope="col" className="px-4 py-3 text-right">
+              Lux
+            </th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+          {bEvents.map((be) => (
+            <tr
+              className="hover:bg-slate-50 dark:hover:bg-slate-800/50"
+              key={be.etime}
+            >
+              <td className="px-4 py-3 font-mono whitespace-nowrap">
+                {new Date(be.etime).toISOString().split('T')[0]}
+              </td>
+              <td className="px-4 py-3 font-mono whitespace-nowrap">
+                {new Date(be.etime).toLocaleTimeString()}
+              </td>
+              <td className="px-4 py-3 whitespace-nowrap">
+                {eventTypeNumberToText(be.event_type)}
+              </td>
+              <td className="px-4 py-3 text-right font-mono whitespace-nowrap">
+                {be.temp_c != null ? `${be.temp_c.toFixed(1)} °C` : ''}
+              </td>
+              <td className="px-4 py-3 text-right font-mono whitespace-nowrap">
+                {be.illuminance_lux != null
+                  ? `${be.illuminance_lux.toFixed(1)} lx`
+                  : ''}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   )
 }
